@@ -96,6 +96,12 @@ Session.prototype.exec = function (command, options) {
         }
 
         function onError(e) {
+            if (e && e.code === 'ESDBREFUSED') {
+                // The transport is fine; only this command was turned away.
+                return finish(SdbError('sdbServiceRefused',
+                    `sdbd refused \`${command}\` without running it (sdb reports this as "closed"). ` +
+                    'Retail firmware only runs an allowlist of commands.'), null);
+            }
             finish(SdbError('sdbStreamError', `SDB stream error: ${(e && e.message) || e}`), null);
         }
 
@@ -156,6 +162,7 @@ Session.prototype.getDuid = function (options) {
     // still looks like a DUID.
     const ask = () => self
         .exec('shell:0 getduid', { timeout: 10000, until: (o) => o.indexOf('\n') !== -1 })
+        .catch((error) => { if (error.code === 'sdbServiceRefused') return ''; throw error; })
         .then((out) => String(out).split('\n')[0].trim());
 
     const attempt = (number) => ask().then((duid) => {

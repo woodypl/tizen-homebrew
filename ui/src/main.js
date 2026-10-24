@@ -37,6 +37,7 @@ const EXPLANATIONS = {
     resignFailed: 'Re-signing failed.',
     badMessage: 'That request was refused.',
     relayDisabled: 'The command relay is off.',
+    commandRefused: 'The TV refused that command.',
     internal: 'Something went wrong.',
 
     installFailed: 'The TV rejected the install.',
@@ -181,7 +182,13 @@ const { send } = connect({
                     };
                 }
 
+                // A failed relay command is answered where it was asked, as well as in the banner.
+                const relayFailed = store.get().relayBusy
+                    ? { relayOutput: `${store.get().relayOutput}[${payload.code}] ${payload.message || ''}\n` }
+                    : {};
+
                 return {
+                    ...relayFailed,
                     phase: null,
                     relayBusy: false,
                     uploading: null,

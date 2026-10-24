@@ -55,6 +55,7 @@ const ErrorCode = {
     CERTS_MISSING: 'certsMissing',
     RESIGN_FAILED: 'resignFailed',
     RELAY_DISABLED: 'relayDisabled',
+    COMMAND_REFUSED: 'commandRefused',
     LOCKED_OUT: 'lockedOut',
     INTERNAL: 'internal',
 

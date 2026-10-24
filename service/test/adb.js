@@ -73,6 +73,12 @@ const serve = (socket) => {
                 return;
             }
 
+            if (service === 'shell:0 refused') {
+                // How retail sdbd answers a command outside its allowlist: CLSE, never OKAY.
+                socket.write(encodePacket(COMMANDS.CLSE, 0, packet.arg1));
+                return;
+            }
+
             if (service === 'shell:0 chunked') {
                 const out = encodePacket(COMMANDS.WRTE, REMOTE_ID, packet.arg1, Buffer.from(CHUNKED));
                 socket.write(okay);
@@ -144,6 +150,16 @@ const main = async () => {
         .catch((error) => error);
 
     check('a WRTE split across three segments reads back whole', chunked === CHUNKED, JSON.stringify(chunked));
+
+    const refused = await session.exec('shell:0 refused', { timeout: 2000 })
+        .then((output) => ({ output }), (error) => ({ error }));
+
+    check('a CLSE before OKAY is a refusal, not empty output',
+        !!refused.error && refused.error.code === 'sdbServiceRefused',
+        refused.error ? `${refused.error.code}: ${refused.error.message}` : `resolved ${JSON.stringify(refused.output)}`);
+
+    check('a refused command leaves the connection usable', session.healthy() &&
+        (await session.getDuid().catch((error) => error)) === DUID, 'the next command failed');
 
     const stream = session._client.createStream('sync:');
     const sent = ['first', 'second', 'third', 'fourth', 'fifth'];

@@ -306,6 +306,13 @@ class AdbConnection extends EventEmitter {
 
             case COMMANDS.CLSE:
                 if (!stream) break;
+                // A CLSE before the first OKAY is a refusal: sdbd never opened the service. Retail
+                // firmware answers every command outside its allowlist this way, and sdb itself
+                // reports it as "closed"; ending the stream quietly would pass for empty output.
+                if (stream._remoteId === -1 && stream.listenerCount('error') > 0) {
+                    stream.emit('error', Object.assign(
+                        new Error('sdbd refused to open the service'), { code: 'ESDBREFUSED' }));
+                }
                 stream.push(null);
                 stream.end();
                 this._streams.delete(packet.arg2);

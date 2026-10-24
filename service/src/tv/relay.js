@@ -27,7 +27,8 @@ const SDB_ERROR_CODES = {
     sdbClosed: ErrorCode.SDB_REFUSED,
     sdbTimeout: ErrorCode.SDB_TIMEOUT,
     sdbFraming: ErrorCode.SDB_UNREACHABLE,
-    sdbAuthRequired: ErrorCode.SDB_UNREACHABLE
+    sdbAuthRequired: ErrorCode.SDB_UNREACHABLE,
+    sdbServiceRefused: ErrorCode.COMMAND_REFUSED
 };
 
 function asProtocolError(err) {
@@ -113,6 +114,13 @@ Relay.prototype.exec = function (id, command, options) {
             self.running.delete(id);
             if (err && err.code === 'sdbTimeout' && output) {
                 return { output, truncated, timedOut: true };
+            }
+            if (err && err.code === 'sdbServiceRefused') {
+                self.log(`relay refused by sdbd: ${trimmed}`);
+                throw ProtocolError(ErrorCode.COMMAND_REFUSED,
+                    `sdbd refused \`${trimmed}\` without running it. Retail firmware only runs an ` +
+                    'allowlist of commands; the relay already adds the leading `0 `, so type ' +
+                    '`applist` or `getduid`, not `0 applist`.');
             }
             throw asProtocolError(err);
         }
