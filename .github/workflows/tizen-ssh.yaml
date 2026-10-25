@@ -27,26 +27,32 @@ jobs:
       - name: Dotnet info
         run: dotnet --info
 
-      # Dump the full stderr-and-stdout of dotnet into the GH log on failure, as
-      # annotations the API can read even when the raw log zip is gated.
       - name: Restore and publish
+        id: build
         working-directory: experiments/tizen-ssh/TizenSsh
         run: |
           set +e
-          dotnet restore 2>&1 | tee /tmp/dotnet-restore.log
+          mkdir -p /tmp/dotnet-logs
+          dotnet restore 2>&1 | tee /tmp/dotnet-logs/restore.log
           code=${PIPESTATUS[0]}
-          if [ $code -ne 0 ]; then
-            echo "::error title=dotnet restore failed with exit $code::$(tail -c 1800 /tmp/dotnet-restore.log | tr '\n' ' ')"
-            exit $code
-          fi
-          dotnet publish -c Release --no-self-contained -o publish 2>&1 | tee /tmp/dotnet-publish.log
+          echo "restore exit: $code" | tee -a /tmp/dotnet-logs/summary.txt
+          if [ $code -ne 0 ]; then exit $code; fi
+          dotnet publish -c Release --no-self-contained -o publish 2>&1 | tee /tmp/dotnet-logs/publish.log
           code=${PIPESTATUS[0]}
-          if [ $code -ne 0 ]; then
-            echo "::error title=dotnet publish failed with exit $code::$(tail -c 1800 /tmp/dotnet-publish.log | tr '\n' ' ')"
-            exit $code
-          fi
+          echo "publish exit: $code" | tee -a /tmp/dotnet-logs/summary.txt
+          if [ $code -ne 0 ]; then exit $code; fi
           echo "=== publish output ==="
-          ls -la publish/
+          ls -la publish/ | tee -a /tmp/dotnet-logs/summary.txt
+
+      # Always upload build logs, even on failure, so the content can be read
+      # from the artifact zip when the raw workflow log zip is gated.
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-build-logs
+          path: /tmp/dotnet-logs/
+          if-no-files-found: ignore
 
       - name: Stage deployment layout
         working-directory: experiments/tizen-ssh
