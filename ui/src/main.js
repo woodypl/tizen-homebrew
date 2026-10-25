@@ -18,7 +18,8 @@ const Send = {
     listDir: 'listDir',
     setRelay: 'setRelay',
     relayExec: 'relayExec',
-    setProxy: 'setProxy'
+    setProxy: 'setProxy',
+    probeSpawn: 'probeSpawn'
 };
 
 // Titles only: what to do about a failure arrives with it as `remedy`. A code with no entry here renders as a
@@ -87,6 +88,9 @@ const store = createStore({
 
     proxy: { enabled: false, allowedHost: null, port: 26102, clients: 0, error: null },
     proxyHostDraft: '',
+
+    spawnBusy: false,
+    spawnReport: null,
 
     phase: null,
     phaseDetail: null,
@@ -161,6 +165,8 @@ const { send } = connect({
 
             proxyState: () => ({ proxy: payload }),
 
+            spawnResult: () => ({ spawnBusy: false, spawnReport: payload }),
+
             relayEnd: () => ({
                 relayBusy: false,
                 relayOutput: `${store.get().relayOutput}${payload.truncated ? '\n[output truncated]' : ''}\n`
@@ -198,6 +204,7 @@ const { send } = connect({
                     ...relayFailed,
                     phase: null,
                     relayBusy: false,
+                    spawnBusy: false,
                     uploading: null,
                     checking: null,
                     error: {
@@ -352,6 +359,12 @@ delegate({
         send(Send.relayExec, { id: String(Date.now()), command });
 
         document.getElementById('cmd').value = '';
+    },
+
+    'spawn:probe': () => {
+        if (store.get().spawnBusy) return;
+        store.update({ spawnBusy: true, spawnReport: null });
+        send(Send.probeSpawn, {});
     },
 
     theme: () => channel.toggle()

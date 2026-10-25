@@ -299,7 +299,55 @@ const sdbProxy = (state) => {
     </label>`);
 };
 
-const shell = (state) => html`${relay(state)}${sdbProxy(state)}`;
+// Diagnostic: does the service runtime actually get to run /bin/sh? If yes, a proper terminal can
+// live right here with no sdbd games. The report is dense on purpose — it is for one of us to read.
+const spawnProbe = (state) => {
+    const report = state.spawnReport;
+
+    const summary = (() => {
+        if (!report) return null;
+        const won = (report.attempts || []).find((attempt) => attempt.ok);
+        if (won) return html`<span class="state-head">Spawn works</span>
+            <span class="small">${won.shell} returned 0 in ${won.durationMs} ms.</span>`;
+        return html`<span class="state-head">Spawn did not work</span>
+            <span class="small">Nothing in ${(report.attempts || []).map((attempt) => attempt.shell).join(', ') || 'the candidates'} ran.</span>`;
+    })();
+
+    const detail = (() => {
+        if (!report) return html``;
+        const lines = ['when   : ' + report.when, 'node   : ' + (report.node || 'unknown')];
+        (report.attempts || []).forEach((attempt, index) => {
+            lines.push('');
+            lines.push(`attempt ${index + 1}: ${attempt.shell}`);
+            if (attempt.threw) {
+                lines.push('  spawn threw: ' + attempt.threw);
+                return;
+            }
+            if (attempt.spawnError) lines.push('  spawn error: ' + attempt.spawnError);
+            lines.push('  exit        : ' + attempt.exitCode + (attempt.signal ? ` (signal ${attempt.signal})` : ''));
+            lines.push('  duration ms : ' + attempt.durationMs);
+            if (attempt.truncated) lines.push('  [output was truncated]');
+            if (attempt.stdout) lines.push('  --- stdout ---\n' + attempt.stdout.replace(/^/gm, '  '));
+            if (attempt.stderr) lines.push('  --- stderr ---\n' + attempt.stderr.replace(/^/gm, '  '));
+        });
+        return html`<pre class="log shell">${lines.join('\n')}</pre>`;
+    })();
+
+    return section('Local spawn probe', html`
+    <p class="small">Can this service run a shell on the TV without going through sdbd? One click runs
+      <span class="mono">/bin/sh -c "id; uname -a; …"</span> inside the service and reports what came back.
+      Harmless to run; nothing is written anywhere.</p>
+
+    <div class="entry">
+      <button class="btn" data-focus="probe:go" data-on-click="spawn:probe"
+              ${state.spawnBusy ? 'disabled' : ''}>${state.spawnBusy ? 'probing…' : 'probe'}</button>
+    </div>
+
+    ${summary ? html`<div class="state state-warn">${summary}</div>` : ''}
+    ${detail}`);
+};
+
+const shell = (state) => html`${relay(state)}${sdbProxy(state)}${spawnProbe(state)}`;
 
 const PANELS = { catalog, upload, github: fromGitHub, url: fromUrl, usb, relay: shell };
 

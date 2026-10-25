@@ -15,7 +15,8 @@ const Inbound = {
     FORGET_CERTS: 'forgetCerts',    // -
     SET_RELAY: 'setRelay',          // { enabled, persist? }
     RELAY_EXEC: 'relayExec',        // { id, command, timeout? }
-    SET_PROXY: 'setProxy'           // { enabled, allowedHost?, persist? }
+    SET_PROXY: 'setProxy',          // { enabled, allowedHost?, persist? }
+    PROBE_SPAWN: 'probeSpawn'       // -
 };
 
 const Outbound = {
@@ -31,7 +32,8 @@ const Outbound = {
     RELAY_STATE: 'relayState',      // { enabled }
     RELAY_DATA: 'relayData',        // { id, chunk }
     RELAY_END: 'relayEnd',          // { id, output, truncated? }
-    PROXY_STATE: 'proxyState'       // { enabled, allowedHost, port, clients, error }
+    PROXY_STATE: 'proxyState',      // { enabled, allowedHost, port, clients, error }
+    SPAWN_RESULT: 'spawnResult'     // { when, node, attempts: [{shell, ok, exitCode, signal, durationMs, stdout, stderr, truncated, threw?, spawnError?}] }
 };
 
 const Phase = {

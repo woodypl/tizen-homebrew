@@ -245,6 +245,17 @@ const attach = ({ server, store, authorise, installer, catalog, updates, relay, 
             send(Outbound.PROXY_STATE, proxy.state());
         };
 
+        const probeSpawn = async () => {
+            if (say) say.warn(`${client} probing local spawn`);
+            try {
+                const report = await require('./tv/spawnProbe.js').run();
+                send(Outbound.SPAWN_RESULT, report);
+            } catch (error) {
+                sendFailure(ProtocolError(ErrorCode.INTERNAL,
+                    `Local spawn probe faulted: ${(error && error.message) || error}`));
+            }
+        };
+
         const runRelayCommand = async ({ id, command, timeout }) => {
             try {
                 const result = await relay.exec(id, command, {
@@ -286,6 +297,7 @@ const attach = ({ server, store, authorise, installer, catalog, updates, relay, 
             [Inbound.SET_RELAY]: setRelay,
             [Inbound.RELAY_EXEC]: runRelayCommand,
             [Inbound.SET_PROXY]: setProxy,
+            [Inbound.PROBE_SPAWN]: probeSpawn,
             [Inbound.SUBMIT_ACCESS_INFO]: createCertificates,
             [Inbound.FORGET_CERTS]: forgetCertificates
         };
