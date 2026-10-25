@@ -28,31 +28,43 @@ jobs:
         run: dotnet --info
 
       - name: Restore and publish
-        id: build
         working-directory: experiments/tizen-ssh/TizenSsh
         run: |
           set +e
-          mkdir -p /tmp/dotnet-logs
-          dotnet restore 2>&1 | tee /tmp/dotnet-logs/restore.log
-          code=${PIPESTATUS[0]}
-          echo "restore exit: $code" | tee -a /tmp/dotnet-logs/summary.txt
-          if [ $code -ne 0 ]; then exit $code; fi
-          dotnet publish -c Release --no-self-contained -o publish 2>&1 | tee /tmp/dotnet-logs/publish.log
-          code=${PIPESTATUS[0]}
-          echo "publish exit: $code" | tee -a /tmp/dotnet-logs/summary.txt
-          if [ $code -ne 0 ]; then exit $code; fi
-          echo "=== publish output ==="
-          ls -la publish/ | tee -a /tmp/dotnet-logs/summary.txt
+          dotnet restore 2>&1 | tee /tmp/restore.log
+          restore_code=${PIPESTATUS[0]}
+          if [ $restore_code -eq 0 ]; then
+            dotnet publish -c Release --no-self-contained -o publish 2>&1 | tee /tmp/publish.log
+            publish_code=${PIPESTATUS[0]}
+          else
+            publish_code=skipped
+          fi
 
-      # Always upload build logs, even on failure, so the content can be read
-      # from the artifact zip when the raw workflow log zip is gated.
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dotnet-build-logs
-          path: /tmp/dotnet-logs/
-          if-no-files-found: ignore
+          # Writes the step summary that the GH Checks API returns via a public
+          # endpoint, so the whole dotnet transcript is reachable even when the
+          # raw log zip and the artifact store are proxy-gated.
+          {
+            echo '## tizen-ssh build'
+            echo
+            echo "- restore exit: \`$restore_code\`"
+            echo "- publish exit: \`$publish_code\`"
+            echo
+            echo '### Restore log (tail)'
+            echo '```'
+            tail -c 8000 /tmp/restore.log || true
+            echo '```'
+            echo
+            echo '### Publish log (tail)'
+            echo '```'
+            [ -f /tmp/publish.log ] && tail -c 8000 /tmp/publish.log || echo '(not run)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$restore_code" -ne 0 ]; then exit $restore_code; fi
+          if [ "$publish_code" != 0 ]; then exit 1; fi
+
+          echo "=== publish output ==="
+          ls -la publish/
 
       - name: Stage deployment layout
         working-directory: experiments/tizen-ssh
