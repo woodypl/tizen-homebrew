@@ -23,7 +23,7 @@ namespace TizenSsh
 
             var done = new ManualResetEventSlim();
             Console.CancelKeyPress += (_, e) => { e.Cancel = true; done.Set(); };
-            AppDomain.CurrentDomain.ProcessExit += (_, _) => done.Set();
+            AppDomain.CurrentDomain.ProcessExit += (_, __) => done.Set();
 
             try { host.Start(); }
             catch (Exception ex) { Log.Err("failed to start listener", ex); return 4; }
