@@ -16,19 +16,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Microsoft's 3.1 SDK was built against the glibc that ships in Ubuntu 20.04
+    # ("focal") and SIGABRTs on anything newer. The maintained container image
+    # keeps the matching runtime around, which is also what the TV runs. The
+    # artifact we produce is portable managed IL — no native deps picked up.
+    container: mcr.microsoft.com/dotnet/sdk:3.1-focal
     steps:
       - uses: actions/checkout@v4
 
-      # .NET Core 3.1 is out of support, so we pin an exact installer version from
-      # Microsoft's archive feed rather than relying on the floating 3.1.x channel.
-      # dotnet-install.sh runs even when the SDK is EOL.
-      - name: Install .NET Core 3.1 SDK
-        run: |
-          curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-          chmod +x /tmp/dotnet-install.sh
-          /tmp/dotnet-install.sh --version 3.1.426 --install-dir "$HOME/.dotnet"
-          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
-          "$HOME/.dotnet/dotnet" --info
+      - name: Dotnet info
+        run: dotnet --info
 
       - name: Restore
         working-directory: experiments/tizen-ssh/TizenSsh
