@@ -31,7 +31,7 @@ signed `script`/`socat` on the TV.
 
 ## Modern OpenSSH clients
 
-FxSsh 1.3 signs host-key proofs with SHA-1 (`ssh-rsa`), which OpenSSH 8.2+
+FxSsh 1.1 signs host-key proofs with SHA-1 (`ssh-rsa`), which OpenSSH 8.2+
 disabled by default. Your first connect from a modern client needs:
 
 ```sh
