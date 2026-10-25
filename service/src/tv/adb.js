@@ -235,6 +235,8 @@ class AdbConnection extends EventEmitter {
     }
 
     _closeStream(stream) {
+        if (stream.isTunnel) return this.closeTunnel(stream);
+
         // Gone from the map means sdbd closed it first, and there is nothing left to tell it.
         if (!this._streams.has(stream.localId())) return;
 
@@ -260,6 +262,10 @@ class AdbConnection extends EventEmitter {
         this._streams.clear();
 
         streams.forEach((stream) => {
+            if (stream.isTunnel) {
+                stream.onAbandon(error);
+                return;
+            }
             if (stream.listenerCount('error') > 0) stream.emit('error', error);
             stream.push(null);
             stream.end();
@@ -269,9 +275,20 @@ class AdbConnection extends EventEmitter {
     _dispatch(packet) {
         const stream = this._streams.get(packet.arg2);
 
+        // A tunnel's packets belong to someone else's ADB session (the sdb proxy's computer), so
+        // they are handed over untouched: no automatic OKAY, which is the far end's to send.
+        if (stream && stream.isTunnel) {
+            if (packet.command === COMMANDS.CLSE) this._streams.delete(packet.arg2);
+            stream.onPacket(packet);
+            return;
+        }
+
         switch (packet.command) {
             case COMMANDS.CNXN:
                 this._banner = packet.data ? packet.data.toString().split(':') : [];
+                // Kept whole for the sdb proxy, which answers a computer's handshake on sdbd's behalf.
+                this._peerVersion = packet.arg1;
+                this._peerBanner = packet.data || Buffer.alloc(0);
                 // sdbd offers 4096; a daemon that offers less is taken at its word.
                 this._maxPayload = Math.min(MAX_PAYLOAD, packet.arg2 || MAX_PAYLOAD);
                 this._handshakeDone = true;
@@ -332,6 +349,53 @@ class AdbConnection extends EventEmitter {
         }
 
         this._socket.write(encodePacket(command, arg1, arg2, payload));
+    }
+
+    // What sdbd said in its CNXN, for answering a tunnelled computer's handshake.
+    peer() {
+        return { version: this._peerVersion, maxPayload: this._maxPayload, banner: this._peerBanner };
+    }
+
+    // A stream whose packets are forwarded rather than read here. `service` is the raw OPEN payload,
+    // NUL included; `onPacket` gets sdbd's OKAY/WRTE/CLSE for it, `onAbandon` the transport's loss.
+    openTunnel(service, onPacket, onAbandon) {
+        const tunnel = {
+            isTunnel: true,
+            localId: this._nextStreamId++,
+            remoteId: -1,
+            onPacket: (packet) => {
+                if (packet.command === COMMANDS.OKAY && tunnel.remoteId === -1) tunnel.remoteId = packet.arg1;
+                onPacket(packet);
+            },
+            onAbandon: onAbandon || NOTHING
+        };
+
+        this._streams.set(tunnel.localId, tunnel);
+
+        const open = () => this._send(COMMANDS.OPEN, tunnel.localId, 0, service);
+
+        if (this._handshakeDone) open();
+        else this.once('connect', open);
+
+        return tunnel;
+    }
+
+    // OKAY, WRTE or CLSE on a tunnel's behalf; the ids are this connection's, not the computer's.
+    sendTunnel(tunnel, command, remoteId, data) {
+        if (!this._streams.has(tunnel.localId)) return false;
+        if (command === COMMANDS.CLSE) this._streams.delete(tunnel.localId);
+        this._send(command, tunnel.localId, remoteId, data || null);
+        return true;
+    }
+
+    closeTunnel(tunnel) {
+        if (!this._streams.has(tunnel.localId)) return;
+
+        this._streams.delete(tunnel.localId);
+
+        if (this._handshakeDone) {
+            this._send(COMMANDS.CLSE, tunnel.localId, tunnel.remoteId === -1 ? 0 : tunnel.remoteId);
+        }
     }
 
     createStream(service) {

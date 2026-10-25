@@ -1,17 +1,32 @@
 'use strict';
 
 // sdbd admits one address, its developer host IP, and once that is 127.0.0.1 no computer can reach it.
-// This forwards a second port to it byte for byte, so a connection arrives from 127.0.0.1 and is let in,
-// and does the admitting itself: one computer, named in the UI, changeable without restarting the TV.
+// This lets one named computer in again without that setting changing and the TV restarting.
+//
+// It cannot simply forward bytes: sdbd holds one transport per host, and the service already holds
+// it (the device sweep keeps it open), so a second connection from 127.0.0.1 is closed unanswered.
+// So the proxy answers the computer's CNXN itself, with what sdbd told the service, and carries each
+// of the computer's streams over the service's own connection, renumbered there and back. Flow
+// control stays end to end: every OKAY is the far end's, forwarded, never invented here.
+//
 // It unlocks nothing sdbd refuses; its command allowlist applies exactly as before.
 
 const net = require('net');
 
+const adb = require('./adb.js');
+const sdb = require('./sdb.js');
+
+const { COMMANDS, HEADER_BYTES, encodePacket } = adb;
+
 const DEFAULT_PORT = 26102;
-const SDB_PORT = 26101;
-const CONNECT_TIMEOUT = 8000;
-// sdb pings an idle transport rarely; a dead peer on either side still has to be noticed.
+// A computer that connects and says nothing is not kept waiting on a socket forever.
+const HANDSHAKE_TIMEOUT = 10000;
+// sdb pings an idle transport rarely; a dead peer still has to be noticed.
 const KEEPALIVE_MS = 30000;
+// A CNXN banner is short; anything longer before the handshake is not sdb.
+const MAX_HANDSHAKE_PAYLOAD = 64 * 1024;
+
+const NAMES = Object.keys(COMMANDS).reduce((all, name) => Object.assign(all, { [COMMANDS[name]]: name }), {});
 
 // `::ffff:192.168.1.20` is how Node reports an IPv4 client on a dual-stack listener.
 const plainAddress = (address) => String(address || '').replace(/^::ffff:/, '');
@@ -20,7 +35,10 @@ function SdbProxy(options) {
     const opts = options || {};
 
     this.port = opts.port || DEFAULT_PORT;
-    this.target = { host: opts.targetHost || '127.0.0.1', port: opts.targetPort || SDB_PORT };
+    // Passed to sdb.withSession, so tests can point the shared connection at a stand-in daemon.
+    this.session = Object.assign({}, opts.session || {});
+    this.sdb = opts.sdb || sdb;
+    this.handshakeTimeout = opts.handshakeTimeout || HANDSHAKE_TIMEOUT;
     this.log = opts.log || { info: () => {}, warn: () => {}, err: () => {} };
     this.onChange = opts.onChange || function () {};
 
@@ -133,7 +151,7 @@ SdbProxy.prototype._dropAll = function (why) {
     if (this._pairs.size === 0) return;
 
     this.log.info(`sdb proxy closing ${this._pairs.size} connection(s): ${why}`);
-    Array.from(this._pairs).forEach((pair) => pair.close());
+    Array.from(this._pairs).forEach((pair) => pair.close(why));
 };
 
 SdbProxy.prototype._accept = function (client) {
@@ -147,62 +165,174 @@ SdbProxy.prototype._accept = function (client) {
         return;
     }
 
-    const upstream = net.connect(this.target.port, this.target.host);
-    const startedAt = Date.now();
-    let toTv = 0;
-    let fromTv = 0;
-    let closed = false;
+    const bridge = new Bridge(this, client, from);
 
-    const pair = {
-        close: () => {
-            if (closed) return;
-            closed = true;
-            this._pairs.delete(pair);
-            client.destroy();
-            upstream.destroy();
-            const seconds = Math.round((Date.now() - startedAt) / 1000);
-            this.log.info(`sdb proxy ${from} disconnected after ${seconds}s ` +
-                `(${toTv} bytes to sdbd, ${fromTv} back)`);
-            this._changed();
-        }
-    };
-
-    this._pairs.add(pair);
-
-    const timer = setTimeout(() => {
-        this.log.err(`sdb proxy: sdbd did not accept within ${CONNECT_TIMEOUT}ms`);
-        pair.close();
-    }, CONNECT_TIMEOUT);
-
-    upstream.on('connect', () => {
-        clearTimeout(timer);
-        this.log.info(`sdb proxy ${from} connected`);
-        this._changed();
-    });
-
-    upstream.on('error', (error) => {
-        clearTimeout(timer);
-        if (error.code === 'ECONNREFUSED') {
-            this.log.err('sdb proxy: nothing listens on 127.0.0.1:26101 — Developer Mode may be off');
-        } else {
-            this.log.err(`sdb proxy upstream: ${error.message}`);
-        }
-        pair.close();
-    });
-
-    [client, upstream].forEach((socket) => {
-        socket.setNoDelay(true);
-        if (socket.setKeepAlive) socket.setKeepAlive(true, KEEPALIVE_MS);
-        socket.on('close', () => { clearTimeout(timer); pair.close(); });
-    });
-
-    client.on('data', (chunk) => { toTv += chunk.length; });
-    upstream.on('data', (chunk) => { fromTv += chunk.length; });
-
-    // pipe() keeps backpressure in place: a slow side pauses the fast one rather than buffering a push.
-    client.pipe(upstream);
-    upstream.pipe(client);
+    this._pairs.add(bridge);
+    this.log.info(`sdb proxy ${from} connected; waiting for its handshake`);
+    this._changed();
 };
+
+// One computer's ADB session, carried over the service's connection to sdbd.
+function Bridge(proxy, client, from) {
+    this.proxy = proxy;
+    this.client = client;
+    this.from = from;
+    this.startedAt = Date.now();
+    this.toTv = 0;
+    this.fromTv = 0;
+    this.streams = new Map(); // the computer's local id -> { tunnel, pcId }
+    this.connection = null;    // the service's AdbConnection, once its session is held
+    this.queue = [];           // what arrives while that session is being acquired
+    this.buffer = Buffer.alloc(0);
+    this.closed = false;
+    this.handshook = false;
+    this.release = null;
+
+    client.setNoDelay(true);
+    if (client.setKeepAlive) client.setKeepAlive(true, KEEPALIVE_MS);
+
+    this.timer = setTimeout(() => this.close('it never sent an sdb handshake'), proxy.handshakeTimeout);
+
+    client.on('data', (chunk) => this.receive(chunk));
+    client.on('close', () => this.close('it hung up'));
+}
+
+Bridge.prototype.sendToClient = function (command, arg1, arg2, data) {
+    if (this.closed) return;
+    const packet = encodePacket(command, arg1, arg2, data || null);
+    this.fromTv += packet.length;
+    this.client.write(packet);
+};
+
+Bridge.prototype.receive = function (chunk) {
+    this.toTv += chunk.length;
+    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
+
+    while (!this.closed && this.buffer.length >= HEADER_BYTES) {
+        const header = adb.decodeHeader(this.buffer.slice(0, HEADER_BYTES));
+        const limit = this.connection ? this.connection.maxPayload() : MAX_HANDSHAKE_PAYLOAD;
+
+        if (header.magic !== ((header.command ^ 0xFFFFFFFF) >>> 0)) {
+            return this.close('it sent something that is not sdb (bad packet magic)');
+        }
+        if (header.dataLength > limit) {
+            return this.close(`it sent ${header.dataLength} bytes in one packet, past the ${limit} sdbd agreed`);
+        }
+        if (this.buffer.length < HEADER_BYTES + header.dataLength) return;
+
+        header.data = this.buffer.slice(HEADER_BYTES, HEADER_BYTES + header.dataLength);
+        this.buffer = this.buffer.slice(HEADER_BYTES + header.dataLength);
+
+        if (this.connection) this.handle(header);
+        else this.queue.push(header);
+
+        if (header.command === COMMANDS.CNXN && !this.handshook && !this.release) this.attach(header);
+    }
+};
+
+// Holds the service's session for as long as the computer stays, so the idle timer cannot close it.
+Bridge.prototype.attach = function (cnxn) {
+    const proxy = this.proxy;
+    const options = Object.assign({ log: () => {} }, proxy.session);
+
+    this.release = () => {};
+
+    proxy.sdb.withSession(options, (session) => new Promise((resolve) => {
+        if (this.closed) return resolve();
+
+        this.release = resolve;
+        this.connection = session._client;
+        clearTimeout(this.timer);
+
+        // A transport that dies with no stream open has nobody to tell; the socket itself does.
+        const socket = this.connection._socket;
+        if (!socket || socket.destroyed) return this.close('the service lost its connection to sdbd');
+        socket.once('close', () => this.close('the service lost its connection to sdbd'));
+
+        const peer = this.connection.peer();
+
+        this.handshook = true;
+        this.sendToClient(COMMANDS.CNXN, peer.version || cnxn.arg1, peer.maxPayload, peer.banner);
+        proxy.log.info(`sdb proxy ${this.from} handshake done (sdb ${hex(cnxn.arg1)} ⇄ sdbd ` +
+            `${hex(peer.version)}, ${peer.maxPayload}-byte packets)`);
+
+        const queued = this.queue;
+        this.queue = [];
+        queued.forEach((packet) => this.handle(packet));
+    })).catch((error) => {
+        proxy.log.err(`sdb proxy cannot reach sdbd for ${this.from}: ${error.message}`);
+        this.close('sdbd could not be reached');
+    });
+};
+
+Bridge.prototype.handle = function (packet) {
+    const connection = this.connection;
+    const entry = this.streams.get(packet.arg1);
+
+    switch (packet.command) {
+        case COMMANDS.CNXN:
+            return; // answered in attach; a repeat changes nothing here
+
+        case COMMANDS.OPEN: {
+            if (entry) return;
+            const pcId = packet.arg1;
+            const service = String(packet.data || '').replace(/\0+$/, '');
+            const tunnel = connection.openTunnel(packet.data,
+                (reply) => this.fromSdbd(pcId, reply),
+                () => this.close('the service lost its connection to sdbd'));
+            this.streams.set(pcId, { tunnel, pcId });
+            this.proxy.log.info(`sdb proxy ${this.from} opened ${service.slice(0, 120)}`);
+            return;
+        }
+
+        case COMMANDS.OKAY:
+            if (entry) connection.sendTunnel(entry.tunnel, COMMANDS.OKAY, packet.arg2);
+            return;
+
+        case COMMANDS.WRTE:
+            if (entry) connection.sendTunnel(entry.tunnel, COMMANDS.WRTE, packet.arg2, packet.data);
+            return;
+
+        case COMMANDS.CLSE:
+            if (!entry) return;
+            this.streams.delete(packet.arg1);
+            connection.sendTunnel(entry.tunnel, COMMANDS.CLSE,
+                packet.arg2 || (entry.tunnel.remoteId === -1 ? 0 : entry.tunnel.remoteId));
+            return;
+
+        default:
+            // SYNC and AUTH from a host mean nothing to sdbd mid-session; nothing is forwarded blind.
+            this.proxy.log.info(`sdb proxy ignored ${NAMES[packet.command] || hex(packet.command)} from ${this.from}`);
+    }
+};
+
+// sdbd's answer on a tunnel, renumbered for the computer.
+Bridge.prototype.fromSdbd = function (pcId, packet) {
+    if (packet.command === COMMANDS.CLSE) this.streams.delete(pcId);
+    this.sendToClient(packet.command, packet.arg1, pcId, packet.data);
+};
+
+Bridge.prototype.close = function (why) {
+    if (this.closed) return;
+    this.closed = true;
+    clearTimeout(this.timer);
+
+    if (this.connection) this.streams.forEach((entry) => this.connection.closeTunnel(entry.tunnel));
+    this.streams.clear();
+
+    this.client.destroy();
+    if (this.release) this.release();
+
+    const proxy = this.proxy;
+    proxy._pairs.delete(this);
+
+    const seconds = Math.round((Date.now() - this.startedAt) / 1000);
+    proxy.log.info(`sdb proxy ${this.from} disconnected after ${seconds}s, ${why} ` +
+        `(${this.toTv} bytes from it, ${this.fromTv} back)`);
+    proxy._changed();
+};
+
+const hex = (value) => `0x${((value || 0) >>> 0).toString(16)}`;
 
 SdbProxy.prototype.close = function () {
     return this._stop('the service is stopping');
