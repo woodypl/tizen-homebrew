@@ -1,0 +1,83 @@
+# Builds TizenSsh as a framework-dependent netcoreapp3.1 app and ships it as a draft
+# release. "Framework-dependent" means we do NOT bundle the .NET runtime — the TV already
+# has 3.1.3, and that's the one with cap_setgid/cap_sys_admin we want running this code.
+name: tizen-ssh
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'experiments/tizen-ssh/**'
+      - '.github/workflows/tizen-ssh.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '3.1.x'
+
+      - name: Restore
+        working-directory: experiments/tizen-ssh/TizenSsh
+        run: dotnet restore
+
+      - name: Publish (framework-dependent, portable)
+        working-directory: experiments/tizen-ssh/TizenSsh
+        run: |
+          dotnet publish -c Release \
+            --no-self-contained \
+            -o publish
+
+      - name: Stage deployment layout
+        working-directory: experiments/tizen-ssh
+        run: |
+          mkdir -p stage
+          cp TizenSsh/publish/TizenSsh.dll stage/
+          cp TizenSsh/publish/TizenSsh.deps.json stage/
+          cp TizenSsh/publish/TizenSsh.runtimeconfig.json stage/
+          cp TizenSsh/publish/FxSsh.dll stage/ || true
+          # Sample authorized_keys the user replaces.
+          cat > stage/authorized_keys <<'EOF'
+          # One SSH public key per line, OpenSSH format:
+          # ssh-rsa AAAA... alice@laptop
+          EOF
+          # Launcher that sets things up and runs the server. The dotnet entrypoint takes
+          # the dll as its arg; by convention we put it next to the dll.
+          cat > stage/tizen-ssh.sh <<'EOF'
+          #!/bin/sh
+          # Launches tizen-ssh under the TV's bundled dotnet. Run from this directory.
+          cd "$(dirname "$0")"
+          exec /usr/bin/dotnet ./TizenSsh.dll
+          EOF
+          chmod +x stage/tizen-ssh.sh
+          ls -la stage/
+
+      - name: Zip
+        working-directory: experiments/tizen-ssh
+        run: cd stage && zip -q -X -r ../tizen-ssh.zip .
+
+      - name: Upload artifact (zipped by GH)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tizen-ssh
+          path: experiments/tizen-ssh/tizen-ssh.zip
+          if-no-files-found: error
+
+      # Draft release carries the zip byte-for-byte, so there's a plain .zip link
+      # on the release page you can download without unwrapping twice.
+      - name: Attach to a draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tizen-ssh-${{ github.run_number }}
+          name: tizen-ssh #${{ github.run_number }}
+          draft: true
+          prerelease: true
+          make_latest: 'false'
+          files: experiments/tizen-ssh/tizen-ssh.zip
+          fail_on_unmatched_files: true
