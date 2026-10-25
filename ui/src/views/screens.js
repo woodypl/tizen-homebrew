@@ -299,51 +299,113 @@ const sdbProxy = (state) => {
     </label>`);
 };
 
-// Diagnostic: does the service runtime actually get to run /bin/sh? If yes, a proper terminal can
-// live right here with no sdbd games. The report is dense on purpose — it is for one of us to read.
+// Who is the service's user, what Smack label does it carry, and where can it write? The first
+// version of this tried child_process.spawn and took the whole service with it; this one only reads.
 const spawnProbe = (state) => {
     const report = state.spawnReport;
 
     const summary = (() => {
         if (!report) return null;
         if (report.clientTimedOut) return html`<span class="state-head">No answer</span>
-            <span class="small">The service never answered the probe. Check its log for a crash.</span>`;
-        if (report.moduleUnavailable) return html`<span class="state-head">No child_process</span>
-            <span class="small">This Node build has no child_process module (${report.moduleUnavailable}).</span>`;
-        const won = (report.attempts || []).find((attempt) => attempt.ok);
-        if (won) return html`<span class="state-head">Spawn works</span>
-            <span class="small">${won.shell} returned 0 in ${won.durationMs} ms.</span>`;
-        return html`<span class="state-head">Spawn did not work</span>
-            <span class="small">Nothing in ${(report.attempts || []).map((attempt) => attempt.shell).join(', ') || 'the candidates'} ran.</span>`;
+            <span class="small">The service never answered the probe within 20s.</span>`;
+        const id = report.identity || {};
+        const writable = (report.writes || []).filter((row) => row.writable).map((row) => row.dir);
+        return html`<span class="state-head">Report ready</span>
+            <span class="small">uid=${id.uid}, gid=${id.gid}; writable: ${writable.join(', ') || 'nothing we tried'}.</span>`;
     })();
 
     const detail = (() => {
         if (!report) return html``;
         if (report.clientTimedOut) return html`<pre class="log shell">no answer from the service after 20 seconds</pre>`;
-        const lines = ['when   : ' + report.when, 'node   : ' + (report.node || 'unknown')];
-        if (report.moduleUnavailable) lines.push('child_process: ' + report.moduleUnavailable);
-        (report.attempts || []).forEach((attempt, index) => {
+
+        const lines = [];
+        lines.push(`when     : ${report.when}`);
+        lines.push(`node     : ${report.node || 'unknown'} (${report.platform || '?'}/${report.arch || '?'})`);
+
+        const id = report.identity || {};
+        lines.push('');
+        lines.push('--- identity ---');
+        lines.push(`pid=${id.pid} ppid=${id.ppid}`);
+        lines.push(`uid=${id.uid} gid=${id.gid} euid=${id.euid} egid=${id.egid}`);
+        lines.push(`groups=${JSON.stringify(id.groups)}`);
+        lines.push(`cwd=${typeof id.cwd === 'string' ? id.cwd : JSON.stringify(id.cwd)}`);
+        lines.push(`env=${JSON.stringify(report.env || {}, null, 2)}`);
+
+        const self = report.procSelf || {};
+        lines.push('');
+        lines.push('--- /proc/self ---');
+        lines.push(`attr/current : ${JSON.stringify(self.attrCurrent)}`);
+        lines.push(`attr/exec    : ${JSON.stringify(self.attrExec)}`);
+        lines.push(`loginuid     : ${JSON.stringify(self.loginuid)}`);
+        if (typeof self.status === 'string') {
+            const slim = self.status.split('\n')
+                .filter((line) => /^(Name|Uid|Gid|Groups|CapEff|Seccomp):/.test(line))
+                .join('\n');
+            lines.push(`status (slim):\n${slim.replace(/^/gm, '  ')}`);
+        }
+
+        if (typeof report.osRelease === 'string') {
             lines.push('');
-            lines.push(`attempt ${index + 1}: ${attempt.shell}`);
-            if (attempt.spawnError) lines.push('  spawn error: ' + attempt.spawnError);
-            lines.push('  exit        : ' + attempt.exitCode + (attempt.signal ? ` (signal ${attempt.signal})` : ''));
-            lines.push('  duration ms : ' + attempt.durationMs);
-            if (attempt.events && attempt.events.length) lines.push('  events      : ' + attempt.events.join(' | '));
-            if (attempt.truncated) lines.push('  [output was truncated]');
-            if (attempt.stdout) lines.push('  --- stdout ---\n' + attempt.stdout.replace(/^/gm, '  '));
-            if (attempt.stderr) lines.push('  --- stderr ---\n' + attempt.stderr.replace(/^/gm, '  '));
+            lines.push('--- /etc/os-release ---');
+            lines.push(report.osRelease.trim());
+        }
+
+        lines.push('');
+        lines.push('--- shells ---');
+        (report.shells || []).forEach((row) => {
+            if (row.error) {
+                lines.push(`${row.path.padEnd(24)}  (missing: ${row.error})`);
+            } else {
+                const extras = [row.kind, row.mode, `${row.uid}:${row.gid}`,
+                    row.linkTarget ? '-> ' + row.linkTarget : null,
+                    row.executable].filter(Boolean).join(' ');
+                lines.push(`${row.path.padEnd(24)}  ${extras}`);
+            }
         });
+
+        lines.push('');
+        lines.push('--- paths ---');
+        (report.paths || []).forEach((row) => {
+            if (row.error) {
+                lines.push(`${row.path.padEnd(24)}  (missing: ${row.error})`);
+            } else {
+                const extras = [row.kind, row.mode, `${row.uid}:${row.gid}`,
+                    row.linkTarget ? '-> ' + row.linkTarget : null,
+                    row.read, row.write, row.execute,
+                    row.children !== undefined ? `${row.children} children` : null].filter(Boolean).join(' | ');
+                lines.push(`${row.path.padEnd(24)}  ${extras}`);
+                if (row.sampleChildren) lines.push(`${''.padEnd(24)}    e.g.: ${row.sampleChildren}`);
+                if (row.readError) lines.push(`${''.padEnd(24)}    readError: ${row.readError}`);
+            }
+        });
+
+        lines.push('');
+        lines.push('--- writes ---');
+        (report.writes || []).forEach((row) => {
+            if (row.writable) {
+                lines.push(`${row.dir.padEnd(28)}  OK${row.cleanupError ? '  (cleanup failed: ' + row.cleanupError + ')' : ''}`);
+            } else {
+                lines.push(`${row.dir.padEnd(28)}  NO  (${row.error})`);
+            }
+        });
+
+        if (typeof self.mountinfo === 'string') {
+            lines.push('');
+            lines.push('--- mountinfo (slim) ---');
+            lines.push(self.mountinfo.split('\n').slice(0, 25).join('\n'));
+        }
+
         return html`<pre class="log shell">${lines.join('\n')}</pre>`;
     })();
 
-    return section('Local spawn probe', html`
-    <p class="small">Can this service run a shell on the TV without going through sdbd? One click runs
-      <span class="mono">/bin/sh -c "id; uname -a; …"</span> inside the service and reports what came back.
-      Harmless to run; nothing is written anywhere.</p>
+    return section('Service environment report', html`
+    <p class="small">Who the service's user is, what Smack label it wears, where it can write, and
+      which shells are on disk. Pure read-only: fork() crashes the WAS Node runtime, so this probe
+      no longer touches it.</p>
 
     <div class="entry">
       <button class="btn" data-focus="probe:go" data-on-click="spawn:probe"
-              ${state.spawnBusy ? 'disabled' : ''}>${state.spawnBusy ? 'probing…' : 'probe'}</button>
+              ${state.spawnBusy ? 'disabled' : ''}>${state.spawnBusy ? 'gathering…' : 'gather'}</button>
     </div>
 
     ${summary ? html`<div class="state state-warn">${summary}</div>` : ''}

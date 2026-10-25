@@ -1,146 +1,193 @@
 'use strict';
 
-// Checks what happens if the service runtime tries to run a signed system binary. On retail Tizen,
-// the kernel verifies ELF hashes against the signed-install database before `exec()`: an unsigned
-// binary never runs, but /bin/sh and friends come from a signed OS install, so they should.
-// A yes to this question would let the "shell" tab talk to a real shell on the TV from within the
-// service, with no sdbd, no injection, no reliance on an unpatched flaw. A no says why: a thrown
-// `spawn` means the Node build has no child_process (unlikely); a non-zero exit or an immediate
-// kill with no output usually means Smack blocked the exec; an EACCES on the exec() path, same.
+// This started life as a spawn probe, but calling child_process.spawn on the TV takes the whole
+// WAS Node runtime down — likely a Smack/integrity signal the exec path can't translate into a
+// JavaScript exception. So the probe no longer touches child_process; what it reports instead is
+// everything else a shell would be useful for: who the service's user is, what Smack label it
+// wears, what is writable, where /bin/sh and friends sit on disk. All read-only Node, no fork.
 
-const CANDIDATES = ['/bin/sh', '/bin/bash', '/usr/bin/sh', '/usr/bin/bash'];
-const SCRIPT = [
-    'echo === id ===',
-    'id',
-    'echo === uname ===',
-    'uname -a',
-    'echo === pwd ===',
-    'echo "$PWD"',
-    'echo === listing /opt/usr ===',
-    'ls -la /opt/usr 2>&1 | head -20',
-    'echo === done ==='
-].join('\n');
-const CAP = 64 * 1024;
-const TIMEOUT = 3000;
-// After kill we wait this long for 'close' or 'exit'; some Node builds on constrained runtimes do
-// not fire the usual signals, so eventually we give up and report what we have.
-const GRACE = 500;
+const { readFileSync, readdirSync, readlinkSync, statSync, accessSync, writeFileSync, unlinkSync, constants } = require('fs');
+const { resolve } = require('path');
 
-const safeImport = () => {
+const CAP = 32 * 1024;
+
+const INTERESTING_ENV = ['HOME', 'PATH', 'TMPDIR', 'TMP', 'USER', 'LOGNAME', 'PWD', 'LANG', 'LC_ALL'];
+
+const PATHS = [
+    '/', '/bin', '/sbin', '/usr', '/usr/bin', '/usr/sbin',
+    '/etc', '/tmp', '/var', '/var/tmp',
+    '/opt', '/opt/usr', '/opt/share', '/opt/home',
+    '/home', '/home/owner', '/home/sdk',
+    '/mnt', '/mnt/opt', '/sdcard', '/dev', '/proc', '/sys', '/run',
+    '/system'
+];
+
+const SHELL_CANDIDATES = [
+    '/bin/sh', '/bin/bash', '/bin/ash', '/bin/busybox', '/bin/dash',
+    '/usr/bin/sh', '/usr/bin/bash', '/usr/bin/busybox',
+    '/system/bin/sh'
+];
+
+const peek = (path, bytes) => {
     try {
-        return { module: require('child_process'), threw: null };
+        const data = readFileSync(path, { encoding: 'utf8' });
+        return bytes && data.length > bytes ? data.slice(0, bytes) + '…' : data;
     } catch (err) {
-        return { module: null, threw: (err && (err.code || err.message)) || String(err) };
+        return { error: (err && (err.code || err.message)) || String(err) };
     }
 };
 
-const tryOne = (shell, cp, note) => new Promise((resolve) => {
-    const start = Date.now();
-    let child;
-    let out = '';
-    let err = '';
-    let truncated = false;
-    let done = false;
-    let timer = null;
-    let graceTimer = null;
-    const events = [];
-
-    const finish = (exitCode, signal, spawnError) => {
-        if (done) return;
-        done = true;
-        if (timer) clearTimeout(timer);
-        if (graceTimer) clearTimeout(graceTimer);
-        resolve({
-            shell,
-            ok: !spawnError && exitCode === 0,
-            exitCode,
-            signal,
-            durationMs: Date.now() - start,
-            stdout: out,
-            stderr: err,
-            truncated,
-            spawnError: spawnError && ((spawnError.code || spawnError.message) || String(spawnError)),
-            events
-        });
-    };
-
+const canI = (path, mode, modeName) => {
     try {
-        child = cp.spawn(shell, ['-c', SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'] });
-    } catch (synchronous) {
-        events.push('spawn-threw');
-        return finish(null, null, synchronous);
+        accessSync(path, mode);
+        return `yes (${modeName})`;
+    } catch (err) {
+        return `${modeName} denied: ${(err && err.code) || err.message}`;
+    }
+};
+
+const describePath = (path) => {
+    let info;
+    try {
+        info = statSync(path);
+    } catch (err) {
+        return { path, error: (err && (err.code || err.message)) || String(err) };
     }
 
-    note(`spawn ${shell}: pid=${child.pid || 'none'}`);
-    events.push(`spawn-returned pid=${child.pid || 'none'}`);
+    const kind = info.isDirectory() ? 'dir'
+        : info.isSymbolicLink() ? 'link'
+            : info.isFile() ? 'file'
+                : info.isBlockDevice() ? 'blk'
+                    : info.isCharacterDevice() ? 'chr'
+                        : info.isFIFO() ? 'fifo'
+                            : info.isSocket() ? 'sock'
+                                : 'other';
 
-    const take = (which) => (chunk) => {
-        if (done || truncated) return;
-        const room = CAP - out.length - err.length;
-        if (chunk.length > room) {
-            chunk = chunk.slice(0, Math.max(0, room));
-            truncated = true;
-        }
-        if (which === 'out') out += chunk; else err += chunk;
+    const row = {
+        path,
+        kind,
+        mode: '0' + (info.mode & 0o7777).toString(8),
+        uid: info.uid,
+        gid: info.gid,
+        size: info.size
     };
 
-    if (child.stdin) {
-        child.stdin.on('error', () => { /* a closed-early stdin is normal */ });
-        try { child.stdin.end(); } catch (e) { /* ignored */ }
+    if (kind === 'dir') {
+        row.read = canI(path, constants.R_OK, 'R');
+        row.write = canI(path, constants.W_OK, 'W');
+        row.execute = canI(path, constants.X_OK, 'X');
+
+        try {
+            const entries = readdirSync(path, { withFileTypes: true });
+            row.children = entries.length;
+            row.sampleChildren = entries.slice(0, 20).map((entry) => entry.name).join(', ');
+        } catch (err) {
+            row.readError = (err && (err.code || err.message)) || String(err);
+        }
     }
-    if (child.stdout) child.stdout.on('data', take('out'));
-    if (child.stderr) child.stderr.on('data', take('err'));
 
-    child.on('spawn', () => { events.push('spawn-event'); });
-    child.on('error', (e) => { events.push(`error ${e.code || e.message}`); finish(null, null, e); });
-    child.on('exit', (code, signal) => { events.push(`exit ${code}/${signal}`); finish(code, signal, null); });
-    child.on('close', (code, signal) => { events.push(`close ${code}/${signal}`); finish(code, signal, null); });
+    if (kind === 'link') {
+        try {
+            row.linkTarget = readlinkSync(path);
+        } catch (err) {
+            row.linkError = (err && (err.code || err.message)) || String(err);
+        }
+    }
 
-    timer = setTimeout(() => {
-        if (done) return;
-        events.push('timeout-kill');
-        try { child.kill('SIGKILL'); } catch (e) { events.push(`kill-threw ${e.code || e.message}`); }
-        graceTimer = setTimeout(() => {
-            if (done) return;
-            events.push('grace-expired');
-            finish(null, 'TIMEOUT', null);
-        }, GRACE);
-    }, TIMEOUT);
-});
+    return row;
+};
+
+const describeShell = (path) => {
+    const row = describePath(path);
+    row.readable = canI(path, constants.R_OK, 'R');
+    row.executable = canI(path, constants.X_OK, 'X');
+    return row;
+};
 
 const run = async (log) => {
-    const say = log && typeof log === 'function' ? log : () => {};
-    say('spawnProbe: starting');
+    const say = typeof log === 'function' ? log : () => {};
+    say('envReport: gathering');
 
-    const nodeVersion = typeof process !== 'undefined' && process.versions && process.versions.node;
-    const imported = safeImport();
-    say(`spawnProbe: require('child_process') ${imported.module ? 'ok' : 'threw ' + imported.threw}`);
+    const pr = typeof process !== 'undefined' ? process : {};
+    const env = pr.env || {};
+    const versions = pr.versions || {};
 
-    if (!imported.module) {
-        return {
-            when: new Date().toISOString(),
-            node: nodeVersion || null,
-            moduleUnavailable: imported.threw,
-            attempts: []
-        };
-    }
+    const envFiltered = {};
+    INTERESTING_ENV.forEach((key) => {
+        if (env[key] !== undefined) envFiltered[key] = env[key];
+    });
 
-    const attempts = [];
-    for (const shell of CANDIDATES) {
-        say(`spawnProbe: trying ${shell}`);
-        const result = await tryOne(shell, imported.module, say);
-        say(`spawnProbe: ${shell} -> ok=${result.ok} exit=${result.exitCode} ` +
-            `events=[${(result.events || []).join(', ')}]`);
-        attempts.push(result);
-        if (result.ok) break;
-    }
+    const identity = {
+        pid: pr.pid,
+        ppid: pr.ppid,
+        uid: typeof pr.getuid === 'function' ? pr.getuid() : null,
+        gid: typeof pr.getgid === 'function' ? pr.getgid() : null,
+        groups: typeof pr.getgroups === 'function' ? (() => {
+            try { return pr.getgroups(); } catch (err) { return { error: err.code || err.message }; }
+        })() : null,
+        euid: typeof pr.geteuid === 'function' ? pr.geteuid() : null,
+        egid: typeof pr.getegid === 'function' ? pr.getegid() : null,
+        cwd: (() => { try { return pr.cwd(); } catch (err) { return { error: err.code || err.message }; } })()
+    };
 
-    say('spawnProbe: done');
+    const procSelf = {
+        status: peek('/proc/self/status', CAP),
+        attrCurrent: peek('/proc/self/attr/current', 256),
+        attrExec: peek('/proc/self/attr/exec', 256),
+        loginuid: peek('/proc/self/loginuid', 32),
+        mountinfo: peek('/proc/self/mountinfo', CAP),
+        limits: peek('/proc/self/limits', CAP)
+    };
+
+    const osRelease = peek('/etc/os-release', 2048);
+    const tizenInfo = peek('/etc/tizen-platform.conf', CAP);
+
+    const paths = PATHS.map(describePath);
+    const shells = SHELL_CANDIDATES.map(describeShell);
+
+    // Writing probes: try to touch a per-path test file. We delete immediately. If creation fails
+    // or deletion fails, we report both. These are the directories most likely to be writable by
+    // whatever user the service runs as.
+    const writeTargets = ['/tmp', '/opt/usr', '/opt/share', '/opt/home', '/home/owner', '/home/owner/share',
+        '/home/owner/share/tmp', '/home/owner/data', pr.cwd && typeof pr.cwd === 'function' ? (() => {
+            try { return pr.cwd(); } catch (err) { return null; }
+        })() : null].filter(Boolean);
+
+    const writes = writeTargets.map((dir) => {
+        const stamp = `.homebrew-env-probe-${pr.pid}-${Date.now()}`;
+        const file = resolve(dir, stamp);
+        try {
+            writeFileSync(file, 'probe\n');
+            try {
+                unlinkSync(file);
+                return { dir, writable: true };
+            } catch (err) {
+                return { dir, writable: true, cleanupError: (err && (err.code || err.message)) || String(err) };
+            }
+        } catch (err) {
+            return { dir, writable: false, error: (err && (err.code || err.message)) || String(err) };
+        }
+    });
+
+    say('envReport: done');
+
     return {
         when: new Date().toISOString(),
-        node: nodeVersion || null,
-        attempts
+        node: versions.node || null,
+        platform: pr.platform || null,
+        arch: pr.arch || null,
+        identity,
+        env: envFiltered,
+        procSelf,
+        osRelease,
+        tizenInfo,
+        paths,
+        shells,
+        writes,
+        // Backwards-compat with the UI: pretend we performed no spawn attempts and no module failure.
+        attempts: [],
+        kind: 'envReport'
     };
 };
 
-module.exports = { run, CANDIDATES };
+module.exports = { run };

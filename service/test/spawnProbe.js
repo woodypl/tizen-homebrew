@@ -1,8 +1,8 @@
 'use strict';
 
-// The spawn probe runs here, on the dev machine, exactly as it will on the TV: we don't stub it.
-// On any Linux dev host the first candidate (/bin/sh) exists and succeeds, which lets us assert
-// the shape of a positive report. The negative-shape case stands in a non-existent shell list.
+// The probe is now read-only: it gathers who-am-I and what's writable from Node's own fs/process
+// APIs, without ever forking. It runs here on the dev machine too — it should always succeed on
+// any Linux host, since nothing it does is risky.
 
 const spawnProbe = require('../src/tv/spawnProbe.js');
 
@@ -16,33 +16,37 @@ const check = (name, ok, detail) => {
     const report = await spawnProbe.run();
 
     check('report has a timestamp', typeof report.when === 'string' && /T.*Z$/.test(report.when), report.when);
+    check('report declares its kind', report.kind === 'envReport', String(report.kind));
     check('report carries the node version', !report.node || /^\d+\.\d+\.\d+/.test(report.node), report.node);
-    check('report has at least one attempt', Array.isArray(report.attempts) && report.attempts.length > 0,
-        JSON.stringify(report.attempts).slice(0, 160));
+    check('report carries platform and arch', typeof report.platform === 'string', report.platform);
 
-    const won = report.attempts.find((attempt) => attempt.ok);
-    check('on a Linux host, at least one shell succeeded', !!won,
-        JSON.stringify(report.attempts.map((attempt) => ({
-            shell: attempt.shell, exitCode: attempt.exitCode, threw: attempt.threw,
-            spawnError: attempt.spawnError
-        }))));
+    check('identity has a pid', report.identity && typeof report.identity.pid === 'number', JSON.stringify(report.identity));
+    check('identity has a uid on linux', report.platform !== 'linux' || typeof report.identity.uid === 'number',
+        JSON.stringify(report.identity));
 
-    if (won) {
-        check('a successful attempt names the shell', typeof won.shell === 'string' && won.shell.length > 0, won.shell);
-        check('a successful attempt reports exit code 0', won.exitCode === 0, String(won.exitCode));
-        check('a successful attempt has stdout', typeof won.stdout === 'string' && won.stdout.length > 0,
-            JSON.stringify(won.stdout).slice(0, 100));
-        check('a successful attempt reports a duration', typeof won.durationMs === 'number' && won.durationMs >= 0,
-            String(won.durationMs));
-        check('the probe script ran `id`', /uid=\d+/.test(won.stdout || ''), won.stdout);
-        check('the probe script ran `uname`', /=== uname ===/.test(won.stdout || ''), won.stdout);
-    }
+    check('procSelf.status has at least a Name line', typeof report.procSelf.status === 'string' &&
+        /Name:/.test(report.procSelf.status), JSON.stringify(report.procSelf.status).slice(0, 120));
 
-    // Stops at the first ok, so a successful first candidate means a one-element array; otherwise it
-    // walks the list.
-    check('the probe stops after the first successful shell',
-        !won || report.attempts[report.attempts.length - 1] === won,
-        JSON.stringify(report.attempts.map((attempt) => attempt.shell)));
+    check('paths is a non-empty array', Array.isArray(report.paths) && report.paths.length > 0, '');
+    check('every path entry names its path', report.paths.every((row) => typeof row.path === 'string'), '');
+    check('/tmp is reported as a dir', (() => {
+        const tmp = report.paths.find((row) => row.path === '/tmp');
+        return tmp && (tmp.kind === 'dir' || tmp.kind === 'link');
+    })(), JSON.stringify(report.paths.find((row) => row.path === '/tmp')));
+
+    check('shells is a non-empty array', Array.isArray(report.shells) && report.shells.length > 0, '');
+    check('/bin/sh is reported (either exists or ENOENT)', (() => {
+        const sh = report.shells.find((row) => row.path === '/bin/sh');
+        return sh && (sh.kind || sh.error);
+    })(), JSON.stringify(report.shells.find((row) => row.path === '/bin/sh')));
+
+    check('writes is an array of attempted directories', Array.isArray(report.writes) && report.writes.length > 0, '');
+    check('/tmp should be writable on a dev host', report.writes.some((row) => row.dir === '/tmp' && row.writable),
+        JSON.stringify(report.writes.find((row) => row.dir === '/tmp')));
+    check('writes leave no trace', report.writes.every((row) => !row.writable || !row.cleanupError),
+        JSON.stringify(report.writes.filter((row) => row.cleanupError)));
+
+    check('report keeps a backwards-compat attempts: []', Array.isArray(report.attempts), '');
 
     const failed = results.filter((r) => !r).length;
     console.log(`\n${results.length - failed}/${results.length} checks passed.`);
