@@ -19,7 +19,7 @@ const CLOSED_BECAUSE = {
     1012: 'the service is restarting'
 };
 
-const attach = ({ server, store, authorise, installer, catalog, updates, relay, refreshDevice,
+const attach = ({ server, store, authorise, installer, catalog, updates, relay, proxy, refreshDevice,
     fromLoopback, greeting, recorded, config, protocol, log }) => {
     const { Inbound, Outbound, ErrorCode, ProtocolError } = protocol;
 
@@ -121,6 +121,7 @@ const attach = ({ server, store, authorise, installer, catalog, updates, relay, 
             if (auth) auth.ok(`${client} paired`);
             send(Outbound.HELLO, { ok: true, needsPin: false });
             send(Outbound.RELAY_STATE, { enabled: relay.enabled });
+            if (proxy) send(Outbound.PROXY_STATE, proxy.state());
 
             await sendDeviceState();
         };
@@ -221,6 +222,29 @@ const attach = ({ server, store, authorise, installer, catalog, updates, relay, 
             send(Outbound.RELAY_STATE, { enabled: relay.enabled });
         };
 
+        const setProxy = async ({ enabled, allowedHost, persist }) => {
+            if (!proxy) throw ProtocolError(ErrorCode.PROXY_FAILED, 'This build has no sdb proxy.');
+
+            const target = typeof allowedHost === 'string' ? allowedHost.trim() : null;
+
+            if (say) say.warn(`${client} turned the sdb proxy ${enabled ? `on for ${target}` : 'off'}` +
+                `${persist ? ', and stored that' : ''}`);
+
+            try {
+                await proxy.setEnabled(enabled, target);
+            } catch (error) {
+                send(Outbound.PROXY_STATE, proxy.state());
+                throw ProtocolError(error.code === 'proxyBadHost' ? ErrorCode.BAD_MESSAGE : ErrorCode.PROXY_FAILED,
+                    error.message);
+            }
+
+            // As with the relay: a second opt-in, so one session does not leave sdbd reachable for good.
+            if (persist) config.update({ proxyEnabled: proxy.enabled, proxyAllowedHost: proxy.allowedHost });
+            else if (!enabled) config.update({ proxyEnabled: false });
+
+            send(Outbound.PROXY_STATE, proxy.state());
+        };
+
         const runRelayCommand = async ({ id, command, timeout }) => {
             try {
                 const result = await relay.exec(id, command, {
@@ -261,6 +285,7 @@ const attach = ({ server, store, authorise, installer, catalog, updates, relay, 
             [Inbound.LIST_DIR]: listDirectory,
             [Inbound.SET_RELAY]: setRelay,
             [Inbound.RELAY_EXEC]: runRelayCommand,
+            [Inbound.SET_PROXY]: setProxy,
             [Inbound.SUBMIT_ACCESS_INFO]: createCertificates,
             [Inbound.FORGET_CERTS]: forgetCertificates
         };

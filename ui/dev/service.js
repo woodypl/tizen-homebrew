@@ -232,6 +232,7 @@ const unframe = (buffer) => {
 const conversation = (socket, say) => {
     let paired = false;
     let relayEnabled = false;
+    let proxy = { enabled: false, allowedHost: null, port: 26102, clients: 0, error: null };
 
     let checked = [];
 
@@ -350,6 +351,7 @@ const conversation = (socket, say) => {
             log.ok('auth', '192.168.2.31 paired');
             send('hello', { ok: true, needsPin: false });
             send('relayState', { enabled: relayEnabled });
+            send('proxyState', proxy);
             send('state', DEVICE);
         },
 
@@ -398,6 +400,14 @@ const conversation = (socket, say) => {
             relayEnabled = !!enabled;
             log.warn('sock', `192.168.2.31 turned the command relay ${enabled ? 'on' : 'off'}`);
             send('relayState', { enabled: relayEnabled });
+        },
+
+        setProxy: ({ enabled, allowedHost }) => {
+            proxy = enabled
+                ? { enabled: true, allowedHost, port: 26102, clients: 0, error: null }
+                : { enabled: false, allowedHost: proxy.allowedHost, port: 26102, clients: 0, error: null };
+            log.warn('sock', `192.168.2.31 turned the sdb proxy ${enabled ? `on for ${allowedHost}` : 'off'}`);
+            send('proxyState', proxy);
         },
 
         relayExec: (payload) => (relayEnabled

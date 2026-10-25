@@ -17,7 +17,8 @@ const Send = {
     install: 'install',
     listDir: 'listDir',
     setRelay: 'setRelay',
-    relayExec: 'relayExec'
+    relayExec: 'relayExec',
+    setProxy: 'setProxy'
 };
 
 // Titles only: what to do about a failure arrives with it as `remedy`. A code with no entry here renders as a
@@ -38,6 +39,7 @@ const EXPLANATIONS = {
     badMessage: 'That request was refused.',
     relayDisabled: 'The command relay is off.',
     commandRefused: 'The TV refused that command.',
+    proxyFailed: 'The sdb proxy could not start.',
     internal: 'Something went wrong.',
 
     installFailed: 'The TV rejected the install.',
@@ -82,6 +84,9 @@ const store = createStore({
     relayEnabled: false,
     relayBusy: false,
     relayOutput: '',
+
+    proxy: { enabled: false, allowedHost: null, port: 26102, clients: 0, error: null },
+    proxyHostDraft: '',
 
     phase: null,
     phaseDetail: null,
@@ -153,6 +158,8 @@ const { send } = connect({
             relayState: () => ({ relayEnabled: !!payload.enabled }),
 
             relayData: () => ({ relayOutput: store.get().relayOutput + payload.chunk }),
+
+            proxyState: () => ({ proxy: payload }),
 
             relayEnd: () => ({
                 relayBusy: false,
@@ -299,6 +306,22 @@ delegate({
     },
 
     'relay:toggle': (element) => send(Send.setRelay, { enabled: element.checked }),
+
+    'proxy:toggle': (element) => {
+        const allowedHost = value('proxyHost');
+
+        if (element.checked && !/^\d{1,3}(\.\d{1,3}){3}$/.test(allowedHost)) {
+            element.checked = false;
+            store.update({
+                proxyHostDraft: allowedHost,
+                error: { title: 'The sdb proxy needs an address.', detail: 'Enter the IPv4 address of the computer to let through, such as 192.168.1.20.', remedy: null }
+            });
+            return;
+        }
+
+        store.update({ proxyHostDraft: allowedHost });
+        send(Send.setProxy, { enabled: element.checked, allowedHost });
+    },
 
     tab: (_element, name) => {
         store.update({ tab: name });

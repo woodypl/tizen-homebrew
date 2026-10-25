@@ -14,7 +14,8 @@ const Inbound = {
     SUBMIT_ACCESS_INFO: 'submitAccessInfo', // { accessToken, userId, email }
     FORGET_CERTS: 'forgetCerts',    // -
     SET_RELAY: 'setRelay',          // { enabled, persist? }
-    RELAY_EXEC: 'relayExec'         // { id, command, timeout? }
+    RELAY_EXEC: 'relayExec',        // { id, command, timeout? }
+    SET_PROXY: 'setProxy'           // { enabled, allowedHost?, persist? }
 };
 
 const Outbound = {
@@ -29,7 +30,8 @@ const Outbound = {
     NEEDS_CERTS: 'needsCerts',      // { ip }
     RELAY_STATE: 'relayState',      // { enabled }
     RELAY_DATA: 'relayData',        // { id, chunk }
-    RELAY_END: 'relayEnd'           // { id, output, truncated? }
+    RELAY_END: 'relayEnd',          // { id, output, truncated? }
+    PROXY_STATE: 'proxyState'       // { enabled, allowedHost, port, clients, error }
 };
 
 const Phase = {
@@ -56,6 +58,7 @@ const ErrorCode = {
     RESIGN_FAILED: 'resignFailed',
     RELAY_DISABLED: 'relayDisabled',
     COMMAND_REFUSED: 'commandRefused',
+    PROXY_FAILED: 'proxyFailed',
     LOCKED_OUT: 'lockedOut',
     INTERNAL: 'internal',
 
@@ -132,6 +135,15 @@ function parse(raw) {
 
     if (msg.type === Inbound.SET_RELAY && typeof payload.enabled !== 'boolean') {
         throw ProtocolError(ErrorCode.BAD_MESSAGE, 'setRelay requires enabled to be a boolean.');
+    }
+
+    if (msg.type === Inbound.SET_PROXY) {
+        if (typeof payload.enabled !== 'boolean') {
+            throw ProtocolError(ErrorCode.BAD_MESSAGE, 'setProxy requires enabled to be a boolean.');
+        }
+        if (payload.enabled && typeof payload.allowedHost !== 'string') {
+            throw ProtocolError(ErrorCode.BAD_MESSAGE, 'setProxy needs the address of the computer to let through.');
+        }
     }
 
     return { type: msg.type, payload };

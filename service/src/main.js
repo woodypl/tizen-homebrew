@@ -22,6 +22,7 @@ const device = require('./tv/device.js');
 const sdb = require('./tv/sdb.js');
 const packages = require('./tv/packages.js');
 const { Relay } = require('./tv/relay.js');
+const { SdbProxy } = require('./tv/proxy.js');
 const config = require('./config.js');
 const protocol = require('./protocol.js');
 const { createInstaller } = require('./install/pipeline.js');
@@ -98,6 +99,21 @@ const start = () => {
     });
 
     if (relay.enabled) log.on(Facility.RELAY).warn('the command relay is ON from stored configuration');
+
+    // Told who listens once the socket server exists; until then a change has nobody to reach.
+    let announceProxy = () => {};
+
+    const proxy = new SdbProxy({
+        log: log.on(Facility.SDB),
+        onChange: (state) => announceProxy(state)
+    });
+
+    const kept = config.read();
+
+    if (kept.proxyEnabled && kept.proxyAllowedHost) {
+        log.on(Facility.SDB).warn(`the sdb proxy is ON from stored configuration, for ${kept.proxyAllowedHost}`);
+        proxy.setEnabled(true, kept.proxyAllowedHost).catch(() => { /* logged by the proxy */ });
+    }
 
     // Loaded on first use so a television that never installs anything does not parse node-forge.
     const resigner = async () => {
@@ -415,6 +431,7 @@ const start = () => {
 
         // sdbd is told the connection is going, rather than finding out from a reset when this exits.
         sdb.release();
+        proxy.close();
 
         // The response has to clear the socket first, because the caller waits on it.
         setTimeout(() => {
@@ -495,9 +512,11 @@ const start = () => {
     });
 
     sockets = require('./socket.js').attach({
-        server, store, secret, authorise, installer, catalog, updates, relay, refreshDevice,
+        server, store, secret, authorise, installer, catalog, updates, relay, proxy, refreshDevice,
         fromLoopback, greeting: () => ({ ...pairing(), build: BUILD }), recorded, config, protocol, log
     });
+
+    announceProxy = (state) => sockets.broadcast(protocol.Outbound.PROXY_STATE, state);
 
     return { server, port: PORT, pin: secret, build: BUILD };
 };

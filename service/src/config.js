@@ -21,6 +21,8 @@ const DEFAULTS = {
     certDuids: null,         // every DUID they name — `--duidList` is a list
     certCreatedAt: null,
     catalogUrl: null,        // overrides the built-in origin when set
+    proxyEnabled: false,     // the sdb proxy, kept across restarts only on a second opt-in
+    proxyAllowedHost: null,  // the one computer it lets through
     lastInstalled: []
 };
 

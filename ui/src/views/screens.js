@@ -255,7 +255,53 @@ const relay = (state) => section('Command relay', html`
       </div>
       <pre class="log shell">${state.relayOutput || ' '}</pre>` : ''}`);
 
-const PANELS = { catalog, upload, github: fromGitHub, url: fromUrl, usb, relay };
+// sdbd lets in only its developer host IP, which is 127.0.0.1 once installed; this forwards a second port to
+// it so one named computer can use sdb again without that setting changing and the TV restarting.
+// The phone reached the TV at this address, so the computer can too; the TV's own page only knows loopback.
+const tvAddress = () => {
+    const name = typeof location !== 'undefined' ? location.hostname : '';
+    return name && !/^(127\.|localhost$|\[?::1)/.test(name) ? name : '<tv-ip>';
+};
+
+const sdbProxy = (state) => {
+    const proxy = state.proxy || {};
+    const clients = proxy.clients || 0;
+
+    return section('sdb proxy', html`
+    <p class="small">Lets one computer use <span class="mono">sdb</span> with this TV while its
+      developer host IP stays 127.0.0.1. sdbd’s command allowlist still applies.</p>
+
+    ${proxy.error ? html`
+      <div class="state state-fault">
+        <span class="state-head">Not running</span>
+        <span class="small">${proxy.error}</span>
+      </div>` : proxy.enabled ? html`
+      <div class="state state-warn">
+        <span class="state-head">On for ${proxy.allowedHost}</span>
+        <span class="small">On that computer: <span class="mono">sdb connect ${tvAddress()}:${proxy.port}</span>
+          · ${clients} ${clients === 1 ? 'connection' : 'connections'}</span>
+      </div>` : html`
+      <div class="state state-warn">
+        <span class="state-head">Installs from your network</span>
+        <span class="small">The named computer can install and run apps. Leave this off unless you are using it.</span>
+      </div>`}
+
+    <div class="entry">
+      <input class="field" id="proxyHost" placeholder="computer's IP, e.g. 192.168.1.20" data-focus="proxyHost"
+             value="${proxy.allowedHost || state.proxyHostDraft || ''}" inputmode="decimal"
+             ${proxy.enabled ? 'disabled' : ''} autocapitalize="off" autocorrect="off" spellcheck="false">
+    </div>
+
+    <label class="toggle">
+      <input type="checkbox" data-focus="proxy" ${proxy.enabled ? 'checked' : ''}
+             data-on-change="proxy:toggle">
+      <span class="small">Enable the sdb proxy</span>
+    </label>`);
+};
+
+const shell = (state) => html`${relay(state)}${sdbProxy(state)}`;
+
+const PANELS = { catalog, upload, github: fromGitHub, url: fromUrl, usb, relay: shell };
 
 const panel = (state) => PANELS[state.tab](state);
 

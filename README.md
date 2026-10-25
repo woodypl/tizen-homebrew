@@ -154,10 +154,15 @@ https://github.com/user-attachments/assets/c176baef-5690-414c-95a5-7e968464a860
 | **GitHub** | `owner/repo` — takes the newest release |
 | **URL** | A direct https link |
 | **USB** | A stick plugged into the TV |
-| **Shell** | sdb commands, off by default |
+| **Shell** | sdb commands, off by default; and the sdb proxy |
 
 The PIN changes every time the app opens, and the TV screen shows the current
 one. Your phone keeps the last one that worked until the TV restarts.
+
+**sdb from a computer.** With the Host PC IP left at `127.0.0.1`, turn on the
+**sdb proxy** under **Shell** and give it your computer's address. Then, on that
+computer, `sdb connect <tv-ip>:26102` and use `sdb` (or Tizen Studio) as usual:
+no setting to change and no restart. sdbd's command allowlist still applies.
 
 **Updates.** Every **Apps** row says whether it is installed and at which
 version. Whether anything newer was *released* is a GitHub request per app, so
@@ -248,7 +253,9 @@ means a reboot neither unpairs every phone nor leaves the code readable only off
 the screen the service exists to avoid. Phones store it per TV and drop it when
 refused; five wrong guesses locks pairing for five minutes. The sdb relay is off
 by default, takes a second opt-in to survive reboots, and refuses commands that
-would disable it or uninstall the app.
+would disable it or uninstall the app. The sdb proxy is off by default too: while
+it is on, the one computer named in it can install and run apps, nothing else
+gets through, and it survives a reboot only on the same second opt-in.
 
 **The log.** sdbd's allowlist excludes every log tool, so the app carries its
 own. Press **show logs** on the TV; up/down a line, left/right a page, RED for
