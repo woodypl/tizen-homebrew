@@ -27,17 +27,24 @@ jobs:
       - name: Dotnet info
         run: dotnet --info
 
-      - name: Restore
-        working-directory: experiments/tizen-ssh/TizenSsh
-        run: dotnet restore --verbosity minimal
-
-      - name: Publish (framework-dependent, portable)
+      # Dump the full stderr-and-stdout of dotnet into the GH log on failure, as
+      # annotations the API can read even when the raw log zip is gated.
+      - name: Restore and publish
         working-directory: experiments/tizen-ssh/TizenSsh
         run: |
-          dotnet publish -c Release \
-            --no-self-contained \
-            --verbosity minimal \
-            -o publish
+          set +e
+          dotnet restore 2>&1 | tee /tmp/dotnet-restore.log
+          code=${PIPESTATUS[0]}
+          if [ $code -ne 0 ]; then
+            echo "::error title=dotnet restore failed with exit $code::$(tail -c 1800 /tmp/dotnet-restore.log | tr '\n' ' ')"
+            exit $code
+          fi
+          dotnet publish -c Release --no-self-contained -o publish 2>&1 | tee /tmp/dotnet-publish.log
+          code=${PIPESTATUS[0]}
+          if [ $code -ne 0 ]; then
+            echo "::error title=dotnet publish failed with exit $code::$(tail -c 1800 /tmp/dotnet-publish.log | tr '\n' ' ')"
+            exit $code
+          fi
           echo "=== publish output ==="
           ls -la publish/
 
