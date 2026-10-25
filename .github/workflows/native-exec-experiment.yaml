@@ -23,23 +23,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # musl.cc ships a prebuilt ARMv7 musl cross-toolchain. Static linking against
-      # musl means we don't depend on the TV's glibc version, and the binary stays
-      # small (a few hundred KB) with no runtime loader. Pinned by hash so a drive-by
-      # tarball swap can't change what we build.
-      - name: Install ARMv7 musl toolchain
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/opt" && cd "$HOME/opt"
-          curl -fsSL https://musl.cc/arm-linux-musleabihf-cross.tgz -o toolchain.tgz
-          tar -xzf toolchain.tgz
-          echo "$HOME/opt/arm-linux-musleabihf-cross/bin" >> "$GITHUB_PATH"
+      # Zig ships every cross-compiler in one binary; `zig cc -target arm-linux-musleabihf`
+      # produces a static ARMv7 musl binary with no toolchain setup.
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
 
-      - name: Verify toolchain
-        run: arm-linux-musleabihf-gcc --version
+      - name: Verify Zig
+        run: zig version
 
       - name: Build
-        run: experiments/native-exec/build.sh
+        run: |
+          mkdir -p experiments/native-exec/build/bin experiments/native-exec/release
+          zig cc -target arm-linux-musleabihf -static -Os -s \
+            -o experiments/native-exec/build/bin/hello \
+            experiments/native-exec/src/hello.c
+          cp experiments/native-exec/tizen-manifest.xml experiments/native-exec/build/
+          version="$(grep -oE 'version="[^"]+"' experiments/native-exec/tizen-manifest.xml | head -1 | cut -d'"' -f2)"
+          pkg="experiments/native-exec/release/org.homebrew.nativeexec-${version}.tpk"
+          (cd experiments/native-exec/build && zip -q -X -r "../../../$pkg" tizen-manifest.xml bin/)
+          file experiments/native-exec/build/bin/hello
+          unzip -l "$pkg"
 
       - name: Upload as artifact
         uses: actions/upload-artifact@v4

@@ -15,30 +15,35 @@ cd "$here"
 
 mkdir -p release build/bin
 
-pick_cc() {
+build_with_zig() {
+    zig cc -target arm-linux-musleabihf -static -Os -s -o build/bin/hello src/hello.c
+}
+
+build_with_gcc() {
+    local candidate
     for candidate in arm-linux-musleabihf-gcc arm-linux-musleabi-gcc arm-linux-gnueabihf-gcc; do
         if command -v "$candidate" >/dev/null 2>&1; then
-            echo "$candidate"
+            echo "cross-compiler: $candidate"
+            "$candidate" -static -Os -s -o build/bin/hello src/hello.c
             return 0
         fi
     done
     return 1
 }
 
-CC="$(pick_cc)" || {
+# Prefer zig — one binary, cross-compiles to any musl target, no setup. Fall back to a
+# traditional cross-gcc if that is what the host happens to have.
+if command -v zig >/dev/null 2>&1; then
+    echo "cross-compiler: zig cc (arm-linux-musleabihf)"
+    build_with_zig
+elif ! build_with_gcc; then
     echo "No ARMv7 cross-compiler on PATH." >&2
-    echo "On Debian/Ubuntu:" >&2
-    echo "  sudo apt-get install -y gcc-arm-linux-gnueabihf  # glibc toolchain" >&2
-    echo "Or install one of the musl variants (musl.cc, Alpine, Buildroot)." >&2
+    echo "  curl -fsSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar -xJ" >&2
+    echo "  export PATH=\"$PWD/zig-linux-x86_64-0.13.0:\$PATH\"" >&2
+    echo "or" >&2
+    echo "  sudo apt-get install -y gcc-arm-linux-gnueabihf" >&2
     exit 1
-}
-
-echo "cross-compiler: $CC"
-
-# -Os -s makes it tiny; -static means the TV's libc version does not matter.
-# -fPIE/-pie are omitted on purpose: the exec verifier is what blocks us or not,
-# and PIE adds nothing to that answer; make the binary one shape, one size.
-"$CC" -static -Os -s -o build/bin/hello src/hello.c
+fi
 
 file build/bin/hello
 
