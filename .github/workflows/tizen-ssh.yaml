@@ -104,6 +104,11 @@ jobs:
           chmod +x stage/tizen-ssh.sh
           ls -la stage/
 
+      # The dotnet:3.1-focal image is minimal and ships no `zip`; apt-get install
+      # keeps the diff small (one package).
+      - name: Install zip
+        run: apt-get update && apt-get install -y --no-install-recommends zip
+
       - name: Zip
         working-directory: experiments/tizen-ssh
         run: cd stage && zip -q -X -r ../tizen-ssh.zip .
