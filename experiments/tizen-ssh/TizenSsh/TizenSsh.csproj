@@ -8,13 +8,10 @@
     <TargetFramework>netcoreapp3.1</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <RollForward>Minor</RollForward>
     <RootNamespace>TizenSsh</RootNamespace>
     <AssemblyName>TizenSsh</AssemblyName>
     <!-- Keep the output small; no reflection trimming needed since we barely use any. -->
     <DebugType>embedded</DebugType>
-    <ServerGarbageCollection>true</ServerGarbageCollection>
-    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>

@@ -19,20 +19,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '3.1.x'
+      # .NET Core 3.1 is out of support, so we pin an exact installer version from
+      # Microsoft's archive feed rather than relying on the floating 3.1.x channel.
+      # dotnet-install.sh runs even when the SDK is EOL.
+      - name: Install .NET Core 3.1 SDK
+        run: |
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+          chmod +x /tmp/dotnet-install.sh
+          /tmp/dotnet-install.sh --version 3.1.426 --install-dir "$HOME/.dotnet"
+          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
+          "$HOME/.dotnet/dotnet" --info
 
       - name: Restore
         working-directory: experiments/tizen-ssh/TizenSsh
-        run: dotnet restore
+        run: dotnet restore --verbosity minimal
 
       - name: Publish (framework-dependent, portable)
         working-directory: experiments/tizen-ssh/TizenSsh
         run: |
           dotnet publish -c Release \
             --no-self-contained \
+            --verbosity minimal \
             -o publish
+          echo "=== publish output ==="
+          ls -la publish/
 
       - name: Stage deployment layout
         working-directory: experiments/tizen-ssh
