@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Minimal native service application. The point of this manifest is not to be a template
+  for anything else; it's the smallest shape that gets a tpk through pkgmgr and in front
+  of the exec verifier.
+
+    - package / appid use a tizen-homebrew-reserved reverse-DNS so the test cannot clash
+      with a real app the user might have installed.
+    - type="capp" says the exec is a native binary.
+    - on-boot/auto-restart are both false: this test is launched by hand with was_execute,
+      so we never want it coming back on its own if it misbehaves.
+    - taskmanage="false" and nodisplay="true" keep it out of the home row and task
+      switcher; it's a service, not something to open.
+    - No privileges are requested. If the binary cannot even run with no privileges,
+      requesting more will not change that; if it can, we add network privileges in a
+      follow-up and try again.
+-->
+<manifest xmlns="http://tizen.org/ns/packages"
+          api-version="6.5"
+          package="org.homebrew.nativeexec"
+          version="0.1.0">
+    <profile name="tv"/>
+    <service-application appid="org.homebrew.nativeexec.hello"
+                         exec="hello"
+                         type="capp"
+                         multiple="false"
+                         nodisplay="true"
+                         taskmanage="false"
+                         on-boot="false"
+                         auto-restart="false">
+        <label>native-exec test</label>
+    </service-application>
+</manifest>

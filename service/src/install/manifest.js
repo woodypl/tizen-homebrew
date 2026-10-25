@@ -70,9 +70,15 @@ const identify = (archive) => {
 
         const icon = /<icon\b[^>]*>([^<]*)<\/icon>/.exec(xml);
 
+        // A tpk may be a ui-application, a service-application, or a widget-application.
+        // The appid is the launch target, so we take whichever is present.
+        const appId = attribute(xml, 'ui-application', 'appid')
+            || attribute(xml, 'service-application', 'appid')
+            || attribute(xml, 'widget-application', 'appid');
+
         return {
             packageId,
-            appId: attribute(xml, 'ui-application', 'appid'),
+            appId,
             name: null,
             version: attribute(xml, 'manifest', 'version'),
             iconPath: icon ? icon[1].trim() : null,
