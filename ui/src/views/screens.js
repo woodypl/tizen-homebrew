@@ -306,6 +306,10 @@ const spawnProbe = (state) => {
 
     const summary = (() => {
         if (!report) return null;
+        if (report.clientTimedOut) return html`<span class="state-head">No answer</span>
+            <span class="small">The service never answered the probe. Check its log for a crash.</span>`;
+        if (report.moduleUnavailable) return html`<span class="state-head">No child_process</span>
+            <span class="small">This Node build has no child_process module (${report.moduleUnavailable}).</span>`;
         const won = (report.attempts || []).find((attempt) => attempt.ok);
         if (won) return html`<span class="state-head">Spawn works</span>
             <span class="small">${won.shell} returned 0 in ${won.durationMs} ms.</span>`;
@@ -315,17 +319,16 @@ const spawnProbe = (state) => {
 
     const detail = (() => {
         if (!report) return html``;
+        if (report.clientTimedOut) return html`<pre class="log shell">no answer from the service after 20 seconds</pre>`;
         const lines = ['when   : ' + report.when, 'node   : ' + (report.node || 'unknown')];
+        if (report.moduleUnavailable) lines.push('child_process: ' + report.moduleUnavailable);
         (report.attempts || []).forEach((attempt, index) => {
             lines.push('');
             lines.push(`attempt ${index + 1}: ${attempt.shell}`);
-            if (attempt.threw) {
-                lines.push('  spawn threw: ' + attempt.threw);
-                return;
-            }
             if (attempt.spawnError) lines.push('  spawn error: ' + attempt.spawnError);
             lines.push('  exit        : ' + attempt.exitCode + (attempt.signal ? ` (signal ${attempt.signal})` : ''));
             lines.push('  duration ms : ' + attempt.durationMs);
+            if (attempt.events && attempt.events.length) lines.push('  events      : ' + attempt.events.join(' | '));
             if (attempt.truncated) lines.push('  [output was truncated]');
             if (attempt.stdout) lines.push('  --- stdout ---\n' + attempt.stdout.replace(/^/gm, '  '));
             if (attempt.stderr) lines.push('  --- stderr ---\n' + attempt.stderr.replace(/^/gm, '  '));

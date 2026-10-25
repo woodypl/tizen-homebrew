@@ -91,6 +91,7 @@ const store = createStore({
 
     spawnBusy: false,
     spawnReport: null,
+    spawnToken: 0,
 
     phase: null,
     phaseDetail: null,
@@ -363,8 +364,23 @@ delegate({
 
     'spawn:probe': () => {
         if (store.get().spawnBusy) return;
-        store.update({ spawnBusy: true, spawnReport: null });
+        const token = Date.now();
+        store.update({ spawnBusy: true, spawnReport: null, spawnToken: token });
         send(Send.probeSpawn, {});
+        // A service that stops answering should not leave the button spinning forever.
+        setTimeout(() => {
+            if (store.get().spawnToken !== token) return;
+            if (!store.get().spawnBusy) return;
+            store.update({
+                spawnBusy: false,
+                spawnReport: {
+                    when: new Date().toISOString(),
+                    node: null,
+                    attempts: [],
+                    clientTimedOut: true
+                }
+            });
+        }, 20000);
     },
 
     theme: () => channel.toggle()

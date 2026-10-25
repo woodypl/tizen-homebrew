@@ -8,6 +8,7 @@ const { join } = require('path');
 const WebSocket = require('ws');
 
 const preview = require('./install/preview.js');
+const spawnProbe = require('./tv/spawnProbe.js');
 const { took, host } = require('./obs/units.js');
 
 const CLOSED_BECAUSE = {
@@ -248,9 +249,12 @@ const attach = ({ server, store, authorise, installer, catalog, updates, relay, 
         const probeSpawn = async () => {
             if (say) say.warn(`${client} probing local spawn`);
             try {
-                const report = await require('./tv/spawnProbe.js').run();
+                const spawnLog = log ? log.on('probe') : null;
+                const trace = spawnLog ? (line) => spawnLog.info(line) : () => {};
+                const report = await spawnProbe.run(trace);
                 send(Outbound.SPAWN_RESULT, report);
             } catch (error) {
+                if (say) say.err(`spawn probe faulted: ${(error && error.stack) || error}`);
                 sendFailure(ProtocolError(ErrorCode.INTERNAL,
                     `Local spawn probe faulted: ${(error && error.message) || error}`));
             }
