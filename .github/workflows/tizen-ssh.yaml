@@ -21,6 +21,12 @@ jobs:
     # keeps the matching runtime around, which is also what the TV runs. The
     # artifact we produce is portable managed IL — no native deps picked up.
     container: mcr.microsoft.com/dotnet/sdk:3.1-focal
+    env:
+      # Skip the first-run welcome and telemetry prompts; otherwise they prefix
+      # every dotnet invocation and crowd out the real output in truncated logs.
+      DOTNET_NOLOGO: '1'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -50,17 +56,13 @@ jobs:
           emit() {
             local label="$1" file="$2"
             [ -f "$file" ] || return 0
-            # First 5 non-empty lines
-            grep -v '^$' "$file" | head -5 | while IFS= read -r line; do
-              echo "::error title=$label (early)::${line}"
+            # The last ~60 non-empty lines (MSBuild error at the end usually).
+            grep -v '^$' "$file" | tail -60 | nl -ba | while IFS= read -r line; do
+              echo "::error title=$label::${line}"
             done
-            # Last 10 non-empty lines
-            grep -v '^$' "$file" | tail -10 | while IFS= read -r line; do
-              echo "::error title=$label (end)::${line}"
-            done
-            # And the very first MSBuild "error" line, if any
-            grep -m1 -E 'error|Error|ERROR' "$file" | head -1 | while IFS= read -r line; do
-              echo "::error title=$label (first)::${line}"
+            # The very first MSBuild "error" line, if any.
+            grep -m1 -E ' error [A-Z0-9]+:|: error:' "$file" | while IFS= read -r line; do
+              echo "::error title=$label-first::${line}"
             done
           }
 
