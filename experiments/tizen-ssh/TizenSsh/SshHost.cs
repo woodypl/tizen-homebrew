@@ -81,11 +81,13 @@ namespace TizenSsh
 
             try
             {
-                string[] shellArgs = args.ShellType == "exec"
-                    ? new[] { "-c", args.CommandText ?? "" }
-                    : _config.ShellArgs;
+                bool isShell = args.ShellType == "shell";
+                string[] shellArgs = isShell
+                    ? _config.ShellArgs
+                    : new[] { "-c", args.CommandText ?? "" };
 
-                var ss = new ShellSession(sessId, args.Channel, _config.Shell, shellArgs);
+                var ss = new ShellSession(sessId, args.Channel, _config.Shell, shellArgs,
+                                          wantPty: isShell);
                 ss.Run();
             }
             catch (Exception ex)
