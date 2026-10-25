@@ -32,9 +32,7 @@ jobs:
         shell: bash
         run: |
           set +e +o pipefail
-          set -x
-          echo "=== pwd ===" ; pwd
-          echo "=== ls ===" ; ls -la
+          echo "::notice::tizen-ssh build step reached"
 
           dotnet restore > /tmp/restore.log 2>&1
           restore_code=$?
@@ -45,36 +43,39 @@ jobs:
             publish_code=$?
           fi
 
-          # Writes the step summary that the Checks API serves, so the whole dotnet
-          # transcript is reachable even when the raw log zip and the artifact store
-          # are proxy-gated.
-          {
-            echo '## tizen-ssh build'
-            echo
-            echo "- restore exit: \`$restore_code\`"
-            echo "- publish exit: \`$publish_code\`"
-            echo
-            echo '### Restore log (tail)'
-            echo '```'
-            tail -c 8000 /tmp/restore.log 2>/dev/null || echo '(no restore log)'
-            echo '```'
-            echo
-            echo '### Publish log (tail)'
-            echo '```'
-            if [ -f /tmp/publish.log ]; then
-              tail -c 8000 /tmp/publish.log
-            else
-              echo '(not run)'
-            fi
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          # Emit the FIRST error line and the LAST error line from dotnet as GitHub
+          # annotations — the only workflow output the Checks API reliably returns
+          # through our proxy. One line per annotation; GH strips embedded newlines
+          # so we pre-flatten with "::line::" separators.
+          emit() {
+            local label="$1" file="$2"
+            [ -f "$file" ] || return 0
+            # First 5 non-empty lines
+            grep -v '^$' "$file" | head -5 | while IFS= read -r line; do
+              echo "::error title=$label (early)::${line}"
+            done
+            # Last 10 non-empty lines
+            grep -v '^$' "$file" | tail -10 | while IFS= read -r line; do
+              echo "::error title=$label (end)::${line}"
+            done
+            # And the very first MSBuild "error" line, if any
+            grep -m1 -E 'error|Error|ERROR' "$file" | head -1 | while IFS= read -r line; do
+              echo "::error title=$label (first)::${line}"
+            done
+          }
 
-          cat /tmp/restore.log 2>/dev/null | tail -40
-          echo '---'
-          cat /tmp/publish.log 2>/dev/null | tail -40
-
-          if [ "$restore_code" -ne 0 ]; then exit "$restore_code"; fi
-          if [ "$publish_code" != 0 ]; then exit 1; fi
+          echo "restore_code=$restore_code"
+          echo "publish_code=$publish_code"
+          if [ "$restore_code" -ne 0 ]; then
+            emit "restore" /tmp/restore.log
+            echo "::error::dotnet restore failed with exit $restore_code"
+            exit "$restore_code"
+          fi
+          if [ "$publish_code" != 0 ]; then
+            emit "publish" /tmp/publish.log
+            echo "::error::dotnet publish failed with exit $publish_code"
+            exit 1
+          fi
           ls -la publish/
 
       - name: Stage deployment layout
