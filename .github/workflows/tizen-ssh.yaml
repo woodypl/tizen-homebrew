@@ -29,20 +29,25 @@ jobs:
 
       - name: Restore and publish
         working-directory: experiments/tizen-ssh/TizenSsh
+        shell: bash
         run: |
-          set +e
-          dotnet restore 2>&1 | tee /tmp/restore.log
-          restore_code=${PIPESTATUS[0]}
-          if [ $restore_code -eq 0 ]; then
-            dotnet publish -c Release --no-self-contained -o publish 2>&1 | tee /tmp/publish.log
-            publish_code=${PIPESTATUS[0]}
-          else
-            publish_code=skipped
+          set +e +o pipefail
+          set -x
+          echo "=== pwd ===" ; pwd
+          echo "=== ls ===" ; ls -la
+
+          dotnet restore > /tmp/restore.log 2>&1
+          restore_code=$?
+
+          publish_code=skipped
+          if [ "$restore_code" -eq 0 ]; then
+            dotnet publish -c Release --no-self-contained -o publish > /tmp/publish.log 2>&1
+            publish_code=$?
           fi
 
-          # Writes the step summary that the GH Checks API returns via a public
-          # endpoint, so the whole dotnet transcript is reachable even when the
-          # raw log zip and the artifact store are proxy-gated.
+          # Writes the step summary that the Checks API serves, so the whole dotnet
+          # transcript is reachable even when the raw log zip and the artifact store
+          # are proxy-gated.
           {
             echo '## tizen-ssh build'
             echo
@@ -51,19 +56,25 @@ jobs:
             echo
             echo '### Restore log (tail)'
             echo '```'
-            tail -c 8000 /tmp/restore.log || true
+            tail -c 8000 /tmp/restore.log 2>/dev/null || echo '(no restore log)'
             echo '```'
             echo
             echo '### Publish log (tail)'
             echo '```'
-            [ -f /tmp/publish.log ] && tail -c 8000 /tmp/publish.log || echo '(not run)'
+            if [ -f /tmp/publish.log ]; then
+              tail -c 8000 /tmp/publish.log
+            else
+              echo '(not run)'
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$restore_code" -ne 0 ]; then exit $restore_code; fi
-          if [ "$publish_code" != 0 ]; then exit 1; fi
+          cat /tmp/restore.log 2>/dev/null | tail -40
+          echo '---'
+          cat /tmp/publish.log 2>/dev/null | tail -40
 
-          echo "=== publish output ==="
+          if [ "$restore_code" -ne 0 ]; then exit "$restore_code"; fi
+          if [ "$publish_code" != 0 ]; then exit 1; fi
           ls -la publish/
 
       - name: Stage deployment layout
