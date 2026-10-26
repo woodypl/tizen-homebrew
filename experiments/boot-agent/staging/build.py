@@ -47,7 +47,7 @@ cp /tmp/selfroot-proof.txt "$EV/selfroot-proof.txt" 2>/dev/null
 chmod 666 "$EV/selfroot-proof.txt" 2>/dev/null
 chsmack -a _ "$EV" "$EV/selfroot-proof.txt" 2>/dev/null
 
-# ── module runner ───────────────────────────────────────────────────────
+# -- module runner -----------------------------------------------------------
 # Persistent modules under /opt, executed as root at every boot.
 # Each module dir has module.json (metadata) and boot.sh (the script).
 # UEP note: cat boot.sh | bash (stdin), NOT bash boot.sh (file).
