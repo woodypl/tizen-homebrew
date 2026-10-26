@@ -54,11 +54,15 @@ happens over SSH once the `02-ssh-service` module brings up
 # 1. Set the framework DLL path.
 export TV_FRAMEWORK_DIR=/path/to/dotnet.tizen/framework
 
-# 2. Build the agent (framework-dependent, no self-contained runtime).
-cd BootAgent
+# 2. Build the archive-root payload (no Tizen framework needed).
+cd SamsungTvArchiveRoot
 dotnet publish -c Release --no-self-contained -o publish
 
-# 3. Build the staging artifacts (keypair, signed tarball, passwd view).
+# 3. Build the boot agent (needs Tizen framework DLLs).
+cd ../BootAgent
+dotnet publish -c Release --no-self-contained -o publish
+
+# 4. Build the staging artifacts (keypair, signed tarball, passwd view).
 cd ..
 python3 staging/build.py
 ```

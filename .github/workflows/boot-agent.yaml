@@ -73,7 +73,16 @@ jobs:
           cp "$STUB_DIR/Tizen.dll" "$STUB_DIR/Tizen.Applications.Common.dll"
           ls -la "$STUB_DIR"
 
-      - name: Restore and publish
+      # SamsungTvArchiveRoot is pure System.* — no Tizen framework refs,
+      # no stubs needed.
+      - name: Build SamsungTvArchiveRoot payload
+        working-directory: experiments/boot-agent/SamsungTvArchiveRoot
+        shell: bash
+        run: |
+          dotnet publish -c Release --no-self-contained -o publish
+          ls -la publish/
+
+      - name: Restore and publish BootAgent
         working-directory: experiments/boot-agent/BootAgent
         shell: bash
         run: |
@@ -130,6 +139,9 @@ jobs:
           cp BootAgent/publish/com.samsung.tv.ghservice.dll stage/
           cp BootAgent/publish/com.samsung.tv.ghservice.deps.json stage/ || true
           cp BootAgent/publish/com.samsung.tv.ghservice.runtimeconfig.json stage/ || true
+          # Archive-root payload.
+          cp SamsungTvArchiveRoot/publish/SamsungTvArchiveRoot.dll stage/selfroot/
+          cp SamsungTvArchiveRoot/publish/SamsungTvArchiveRoot.runtimeconfig.json stage/selfroot/
           # Chain artifacts.
           cp staging/out/public.pem stage/selfroot/
           cp staging/out/passwd stage/selfroot/

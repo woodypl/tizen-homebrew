@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Archive-root payload: runs under sdbd's dotnet (cap_setuid, cap_sys_admin).
+       unshare(CLONE_NEWNS) + bind-mount passwd/public.pem, then sdbd-tarlauncher
+       verifies the signed tarball and runs launch.sh as uid 0.
+
+       Retargeted to netcoreapp3.1 from levkropp's net6.0 original — the
+       Freestyle (Tizen 6.5) ships dotnet 3.1.3 and nothing newer. The code
+       is pure System.* P/Invoke, no 6.0 APIs needed.
+
+       Origin: levkropp/samsung-tv-root-untethered payloads/common/ -->
+  <PropertyGroup>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>SamsungTvArchiveRoot</AssemblyName>
+    <UseAppHost>false</UseAppHost>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <LangVersion>8.0</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="SamsungTvArchiveRoot.cs" />
+  </ItemGroup>
+</Project>
