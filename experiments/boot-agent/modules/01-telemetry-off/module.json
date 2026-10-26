@@ -1,0 +1,7 @@
+{
+  "id": "01-telemetry-off",
+  "name": "Disable ad & telemetry daemons",
+  "version": "1.0.0",
+  "description": "Masks and stops Samsung's ad/telemetry daemons (adagent, pisa, canalysis, slive, contents-recognition, context-aware, CIS) at every boot via runtime masks and vendor opt-out switches.",
+  "scripts": { "boot": "boot.sh" }
+}

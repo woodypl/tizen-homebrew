@@ -1,0 +1,165 @@
+# Builds the boot agent as a framework-dependent netcoreapp3.1 app.
+# The Tizen framework DLLs (Tizen.dll, Tizen.Applications.Common.dll)
+# are not publicly redistributable, so CI creates empty stubs that
+# satisfy the compiler. The resulting IL is never linked against them
+# at runtime — the TV's real framework is loaded by its dotnet host.
+#
+# The staging artifacts (signed tarball, passwd view, keypair) are built
+# by staging/build.py, which needs openssl. CI runs that too and zips
+# everything into a single release artifact.
+name: boot-agent
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'experiments/boot-agent/**'
+      - '.github/workflows/boot-agent.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: mcr.microsoft.com/dotnet/sdk:3.1-focal
+    env:
+      DOTNET_NOLOGO: '1'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dotnet info
+        run: dotnet --info
+
+      # Create stub assemblies for the Tizen framework DLLs the project
+      # references. These are empty managed assemblies that let the C#
+      # compiler resolve type references — they are never shipped.
+      - name: Create Tizen framework stubs
+        shell: bash
+        run: |
+          STUB_DIR="$GITHUB_WORKSPACE/tizen-stubs"
+          mkdir -p "$STUB_DIR"
+
+          # Minimal C# source that declares just the types we reference.
+          cat > /tmp/TizenStub.cs <<'CSEOF'
+          namespace Tizen {
+            public class SafeAppHandle : System.Runtime.InteropServices.SafeHandle {
+              public SafeAppHandle() : base(System.IntPtr.Zero, true) {}
+              public override bool IsInvalid => true;
+              protected override bool ReleaseHandle() => true;
+            }
+          }
+          namespace Tizen.Applications {
+            public class ServiceApplication {
+              protected virtual void OnCreate() {}
+              protected virtual void OnAppControlReceived(AppControlReceivedEventArgs e) {}
+              protected virtual void OnTerminate() {}
+              public void Run(string[] args) {}
+            }
+            public class AppControlReceivedEventArgs : System.EventArgs {}
+          }
+          CSEOF
+
+          # Build stub DLLs.
+          dotnet new classlib -n TizenStub -o /tmp/tizen-stub --framework netcoreapp3.1 --force
+          cp /tmp/TizenStub.cs /tmp/tizen-stub/TizenStub.cs
+          rm -f /tmp/tizen-stub/Class1.cs
+          dotnet build /tmp/tizen-stub -c Release -o "$STUB_DIR" /p:AssemblyName=Tizen 2>&1 | tail -5
+
+          # Copy the same assembly as Tizen.Applications.Common (it contains
+          # the namespace the project needs).
+          cp "$STUB_DIR/Tizen.dll" "$STUB_DIR/Tizen.Applications.Common.dll"
+          ls -la "$STUB_DIR"
+
+      - name: Restore and publish
+        working-directory: experiments/boot-agent/BootAgent
+        shell: bash
+        run: |
+          set +e +o pipefail
+          STUB_DIR="$GITHUB_WORKSPACE/tizen-stubs"
+
+          dotnet restore /p:TV_FRAMEWORK_DIR="$STUB_DIR" > /tmp/restore.log 2>&1
+          restore_code=$?
+
+          publish_code=skipped
+          if [ "$restore_code" -eq 0 ]; then
+            dotnet publish -c Release --no-self-contained -o publish \
+              /p:TV_FRAMEWORK_DIR="$STUB_DIR" > /tmp/publish.log 2>&1
+            publish_code=$?
+          fi
+
+          emit() {
+            local label="$1" file="$2"
+            [ -f "$file" ] || return 0
+            grep -v '^$' "$file" | tail -60 | nl -ba | while IFS= read -r line; do
+              echo "::error title=$label::${line}"
+            done
+            grep -m1 -E ' error [A-Z0-9]+:|: error:' "$file" | while IFS= read -r line; do
+              echo "::error title=$label-first::${line}"
+            done
+          }
+
+          echo "restore_code=$restore_code"
+          echo "publish_code=$publish_code"
+          if [ "$restore_code" -ne 0 ]; then
+            emit "restore" /tmp/restore.log
+            echo "::error::dotnet restore failed with exit $restore_code"
+            exit "$restore_code"
+          fi
+          if [ "$publish_code" != 0 ]; then
+            emit "publish" /tmp/publish.log
+            echo "::error::dotnet publish failed with exit $publish_code"
+            exit 1
+          fi
+          ls -la publish/
+
+      # Build the staging artifacts (keypair, signed tarball, passwd view).
+      # staging/build.py needs openssl and python3, both present in the
+      # dotnet:3.1-focal image.
+      - name: Build staging artifacts
+        working-directory: experiments/boot-agent
+        run: python3 staging/build.py
+
+      - name: Stage deployment layout
+        working-directory: experiments/boot-agent
+        run: |
+          mkdir -p stage/selfroot
+          # Agent DLL and deps.
+          cp BootAgent/publish/com.samsung.tv.ghservice.dll stage/
+          cp BootAgent/publish/com.samsung.tv.ghservice.deps.json stage/ || true
+          cp BootAgent/publish/com.samsung.tv.ghservice.runtimeconfig.json stage/ || true
+          # Chain artifacts.
+          cp staging/out/public.pem stage/selfroot/
+          cp staging/out/passwd stage/selfroot/
+          cp staging/out/archive-root-*.tar.gz stage/selfroot/
+          cp staging/out/archive-root-*.tar.gz.signature stage/selfroot/
+          # Modules.
+          cp -r modules stage/selfroot/modules
+          ls -laR stage/
+
+      - name: Install zip
+        run: apt-get update && apt-get install -y --no-install-recommends zip
+
+      - name: Zip
+        working-directory: experiments/boot-agent
+        run: cd stage && zip -q -X -r ../boot-agent.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-agent
+          path: experiments/boot-agent/boot-agent.zip
+          if-no-files-found: error
+
+      - name: Attach to a draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: boot-agent-${{ github.run_number }}
+          name: boot-agent #${{ github.run_number }}
+          draft: true
+          prerelease: true
+          make_latest: 'false'
+          files: experiments/boot-agent/boot-agent.zip
+          fail_on_unmatched_files: true

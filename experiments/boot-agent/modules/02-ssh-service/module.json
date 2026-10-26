@@ -1,0 +1,7 @@
+{
+  "id": "02-ssh-service",
+  "name": "SSH server at boot",
+  "version": "1.0.0",
+  "description": "Launches tizen-ssh as a supervised systemd service at every boot, giving persistent SSH access without a host computer. Reads config from /opt/usr/share/selfroot/ssh/.",
+  "scripts": { "boot": "boot.sh" }
+}

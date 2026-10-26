@@ -1,0 +1,7 @@
+{
+  "id": "03-bridge-service",
+  "name": "SDB bridge relay service",
+  "version": "1.0.0",
+  "description": "Runs a token-gated TCP relay as a supervised headless service, forwarding authenticated connections to localhost sdbd. Management access survives app lifecycle.",
+  "scripts": { "boot": "boot.sh" }
+}

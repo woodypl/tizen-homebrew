@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Build the boot agent's staging artifacts.
+
+Generates the RSA keypair for the signed launch script archive (pinned to
+./out/pinned-private.pem so re-runs do not invalidate previously staged
+signatures), the passwd bind view, and the signed launch.sh tarball that
+sdbd-tarlauncher executes at boot.
+
+All artifacts land in ./out/ — nothing is written outside this directory.
+
+Usage:
+    python3 staging/build.py
+"""
+import io, os, subprocess, tarfile, tempfile
+
+PKG = "archive-root-00b0000000000001"  # 16 hex chars after the prefix
+assert len(PKG) == len("archive-root-") + 16
+assert all(c in "0123456789abcdef" for c in PKG[len("archive-root-"):])
+
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+os.makedirs(OUT, exist_ok=True)
+
+# The launch script that runs as uid 0 after the archive-root payload.
+# It writes proof, sets up evidence directory permissions, and runs modules.
+LAUNCH_SH = r"""exec 2>&1
+{
+  echo "SELFROOT-PROOF uid=$(id -u) gid=$(id -g)"
+  echo "---STATUS---"
+  cat /proc/self/status
+  echo "---PASSWD-VIEW---"
+  cat /etc/passwd
+  echo "---DONE---"
+} > /tmp/selfroot-proof.txt
+chsmack -a _ /tmp/selfroot-proof.txt 2>/dev/null
+
+# Publish the proof to the persistent evidence dir IMMEDIATELY (root
+# context), so the agent can detect success while modules are still running.
+EV=/home/owner/share/tmp/sdk_tools/selfroot-evidence
+mkdir -p "$EV" 2>/dev/null
+# Pre-create the agent log with app-writable SMACK label. The agent
+# (User::Pkg::*) can append to User::App::Shared files but can neither
+# create files nor write floor-labeled (_) ones.
+touch "$EV/agent.log" 2>/dev/null
+chmod 666 "$EV/agent.log" 2>/dev/null
+chsmack -a 'User::App::Shared' "$EV/agent.log" 2>/dev/null
+cp /tmp/selfroot-proof.txt "$EV/selfroot-proof.txt" 2>/dev/null
+chmod 666 "$EV/selfroot-proof.txt" 2>/dev/null
+chsmack -a _ "$EV" "$EV/selfroot-proof.txt" 2>/dev/null
+
+# ── module runner ───────────────────────────────────────────────────────
+# Persistent modules under /opt, executed as root at every boot.
+# Each module dir has module.json (metadata) and boot.sh (the script).
+# UEP note: cat boot.sh | bash (stdin), NOT bash boot.sh (file).
+MODS=/opt/usr/share/selfroot/modules
+if [ -d "$MODS" ]; then
+  mkdir -p "$EV" 2>/dev/null
+  for m in "$MODS"/*/; do
+    [ -d "$m" ] || continue
+    mid=$(basename "$m")
+    # Check for disabled flag.
+    if [ -f "$m/disabled" ]; then
+      echo "$(date) skip $mid (disabled)" >> "$EV/modules.log"
+      continue
+    fi
+    [ -f "$m/boot.sh" ] || continue
+    echo "$(date) run $mid" >> "$EV/modules.log"
+    ( cd "$m" && cat "$m/boot.sh" | MODULE_DIR="$m" EVIDENCE="$EV" bash ) \
+        > "$EV/module-$mid.log" 2>&1
+    echo "$(date) $mid exit=$?" >> "$EV/modules.log"
+  done
+fi
+sleep 5
+"""
+
+
+def openssl(*args):
+    subprocess.run(["openssl", *args], check=True, capture_output=True)
+
+
+with tempfile.TemporaryDirectory() as td:
+    priv = os.path.join(td, "private.pem")
+    pub = os.path.join(td, "public.pem")
+    pinned = os.path.join(OUT, "pinned-private.pem")
+
+    if os.path.exists(pinned):
+        import shutil; shutil.copy(pinned, priv)
+        print("signing key: PINNED", os.path.realpath(pinned))
+    else:
+        print("signing key: *** GENERATING A NEW KEYPAIR ***")
+        print("    A public.pem already staged on a TV will NOT verify a fresh")
+        print("    key (tarlauncher exit 255, no root, no proof). Copy the")
+        print("    canonical pinned-private.pem into out/ and rebuild.")
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048",
+                "-out", priv)
+        import shutil; shutil.copy(priv, pinned)
+
+    openssl("pkey", "-in", priv, "-pubout", "-out", pub)
+
+    import hashlib
+    print("public.pem sha256:", hashlib.sha256(
+        open(pub, "rb").read()).hexdigest()[:16],
+        "(must match the public.pem staged on the TV)")
+
+    # passwd view: owner maps to uid 0 (bind-mounted over /etc/passwd by
+    # the archive-root payload's unshare(CLONE_NEWNS) trick).
+    with open(os.path.join(td, "passwd"), "w") as f:
+        f.write("owner:x:0:0:owner:/home/owner:/bin/sh\n")
+
+    # Build the signed archive containing launch.sh.
+    archive = os.path.join(td, f"{PKG}.tar.gz")
+    script = LAUNCH_SH.encode("ascii")
+    with tarfile.open(archive, "w:gz") as out:
+        m = tarfile.TarInfo("launch.sh")
+        m.size = len(script)
+        m.mode = 0o600
+        m.mtime = 0
+        out.addfile(m, io.BytesIO(script))
+
+    sig = os.path.join(td, f"{PKG}.tar.gz.signature")
+    openssl("dgst", "-sha256", "-sign", priv, "-out", sig, archive)
+    # Verify round-trip.
+    subprocess.run(["openssl", "dgst", "-sha256", "-verify", pub,
+                    "-signature", sig, archive], check=True, capture_output=True)
+
+    # Ship artifacts to out/.
+    for name, src in [("private.pem", priv), ("public.pem", pub),
+                      ("passwd", os.path.join(td, "passwd")),
+                      (f"{PKG}.tar.gz", archive),
+                      (f"{PKG}.tar.gz.signature", sig)]:
+        dst = os.path.join(OUT, name)
+        with open(src, "rb") as f, open(dst, "wb") as g:
+            g.write(f.read())
+        print("wrote", dst)
+
+    print("PKG =", PKG)

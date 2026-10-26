@@ -1,0 +1,7 @@
+{
+  "id": "04-sw-update-off",
+  "name": "Disable firmware OTA and app background updates",
+  "version": "1.0.0",
+  "description": "Blocks SWUAutoUpgrade, fw-update-service (including USB path) and was_background_update at every boot. An OTA would wipe the root setup.",
+  "scripts": { "boot": "boot.sh" }
+}

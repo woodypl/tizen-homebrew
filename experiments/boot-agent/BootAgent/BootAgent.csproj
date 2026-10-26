@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Boot agent: headless on-boot dotnet-inhouse app that re-acquires root
+       via the localhost sdbd injection, then runs modules.
+
+       No NUI dependency — this is a svcapp, not a UI app. Management
+       happens over tizen-ssh (experiments/tizen-ssh) once it's running.
+
+       Build against the TV's own framework assemblies:
+         TV_FRAMEWORK_DIR=/path/to/dotnet.tizen/framework dotnet build -c Release
+       Pull /usr/share/dotnet.tizen off the TV first. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <!-- The assembly name must match the app whose slot this agent occupies.
+         Default is com.samsung.tv.ghservice (Gaming Hub); change it to match
+         whatever app is available on your model. See README.md. -->
+    <AssemblyName>com.samsung.tv.ghservice</AssemblyName>
+    <RootNamespace>BootAgent</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <UseAppHost>false</UseAppHost>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DebugType>none</DebugType>
+    <LangVersion>8.0</LangVersion>
+    <TvFrameworkDir>$(TV_FRAMEWORK_DIR)</TvFrameworkDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="SdbClient.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Tizen.Applications.Common is needed for ServiceApplication base class.
+         No NUI, no UI, no window — this runs as a headless service app. -->
+    <Reference Include="Tizen.Applications.Common">
+      <HintPath>$(TvFrameworkDir)/Tizen.Applications.Common.dll</HintPath>
+    </Reference>
+    <Reference Include="Tizen">
+      <HintPath>$(TvFrameworkDir)/Tizen.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
